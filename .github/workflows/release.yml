@@ -52,8 +52,7 @@ jobs:
       - name: Build publishable crate archives in registry order
         run: |
           cargo package -p mb-printer-core --locked
-          cargo package -p mb-printer-native --locked --no-verify
-          cargo package -p mb-printer-wasm --locked --no-verify
+          cargo package --workspace --locked --no-verify
       - run: cd target/package/mb-printer-core-$(cat VERSION) && cargo test --locked
       - run: npm ci && npm run build && npm run test:schema && npm run test:wasm-node
         working-directory: crates/mb-printer-wasm

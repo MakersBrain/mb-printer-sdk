@@ -22,8 +22,7 @@ jobs:
       - name: Build publishable crate archives in registry order
         run: |
           cargo package -p mb-printer-core --locked
-          cargo package -p mb-printer-native --locked --no-verify
-          cargo package -p mb-printer-wasm --locked --no-verify
+          cargo package --workspace --locked --no-verify
       - name: Test unpacked core crate archive
         run: cd target/package/mb-printer-core-$(cat VERSION) && cargo test --locked
       - run: diff -qr schema crates/mb-printer-core/schema && diff -qr fixtures/v4 crates/mb-printer-core/fixtures/v4 && diff -qr fixtures/v3 crates/mb-printer-core/fixtures/v3 && diff -qr fixtures/template crates/mb-printer-core/fixtures/template && cmp fixtures/protocol/python-actions.json crates/mb-printer-core/fixtures/protocol/python-actions.json && cmp fixtures/protocol/matrix.json crates/mb-printer-core/fixtures/protocol/matrix.json && cmp fixtures/wasm/equivalence.json crates/mb-printer-core/fixtures/wasm/equivalence.json
