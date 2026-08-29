@@ -231,11 +231,45 @@ struct Placement {
 }
 const TRIG_SCALE: i64 = 1_000_000_000;
 fn fixed_trig(millidegrees: i32) -> (i64, i64) {
-    let radians = f64::from(millidegrees) * std::f64::consts::PI / 180_000.0;
-    (
-        (radians.cos() * TRIG_SCALE as f64).round() as i64,
-        (radians.sin() * TRIG_SCALE as f64).round() as i64,
-    )
+    const ATAN_MDEG: [i32; 17] = [
+        45_000, 26_565, 14_036, 7_125, 3_576, 1_790, 895, 448, 224, 112, 56, 28, 14, 7, 3, 2, 1,
+    ];
+    match millidegrees.rem_euclid(360_000) {
+        0 => return (TRIG_SCALE, 0),
+        90_000 => return (0, TRIG_SCALE),
+        180_000 => return (-TRIG_SCALE, 0),
+        270_000 => return (0, -TRIG_SCALE),
+        _ => {}
+    }
+    let mut angle = millidegrees.rem_euclid(360_000);
+    if angle > 180_000 {
+        angle -= 360_000;
+    }
+    let sign = if angle > 90_000 {
+        angle -= 180_000;
+        -1
+    } else if angle < -90_000 {
+        angle += 180_000;
+        -1
+    } else {
+        1
+    };
+    // CORDIC gain compensation, rounded to the shared 1e9 fixed-point scale.
+    let mut x = 607_252_935i64;
+    let mut y = 0i64;
+    let mut remaining = angle;
+    for (shift, step) in ATAN_MDEG.into_iter().enumerate() {
+        let divisor = 1i64 << shift;
+        let (next_x, next_y) = if remaining >= 0 {
+            (x - y / divisor, y + x / divisor)
+        } else {
+            (x + y / divisor, y - x / divisor)
+        };
+        x = next_x;
+        y = next_y;
+        remaining += if remaining >= 0 { -step } else { step };
+    }
+    (x * sign, y * sign)
 }
 fn rotate_fixed(x: i64, y: i64, angle: i32) -> (i64, i64) {
     let (cos, sin) = fixed_trig(angle);
@@ -472,10 +506,10 @@ fn rotate_layer(canvas: &mut GrayRaster, layer: &GrayRaster, placement: Placemen
     let (cos, sin) = fixed_trig(angle);
     let cx2 = i64::from(2 * placement.x + placement.w - 1);
     let cy2 = i64::from(2 * placement.y + placement.h - 1);
-    let radius = (((i64::from(placement.w).pow(2) + i64::from(placement.h).pow(2)) as f64).sqrt()
-        / 2.0)
-        .ceil() as i32
-        + 2;
+    let diagonal_squared =
+        u64::try_from(i64::from(placement.w).pow(2) + i64::from(placement.h).pow(2))
+            .unwrap_or(u64::MAX);
+    let radius = integer_sqrt_ceil(diagonal_squared).div_ceil(2) as i32 + 2;
     let min_x = (placement.x + placement.w / 2 - radius).max(0);
     let max_x = (placement.x + placement.w / 2 + radius).min(canvas.width as i32 - 1);
     let min_y = (placement.y + placement.h / 2 - radius).max(0);
@@ -505,6 +539,22 @@ fn rotate_layer(canvas: &mut GrayRaster, layer: &GrayRaster, placement: Placemen
             }
         }
     }
+}
+fn integer_sqrt_ceil(value: u64) -> u64 {
+    if value <= 1 {
+        return value;
+    }
+    let mut low = 1u64;
+    let mut high = value.min(u64::from(u32::MAX) + 1);
+    while low < high {
+        let middle = low + (high - low) / 2;
+        if middle.saturating_mul(middle) >= value {
+            high = middle;
+        } else {
+            low = middle + 1;
+        }
+    }
+    low
 }
 fn zone_clones(zones: &[crate::document::Zone], candidate: &str, source: &str) -> bool {
     let mut next = zones

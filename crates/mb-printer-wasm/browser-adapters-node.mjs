@@ -41,6 +41,17 @@ const separated = {...transport(), payloadLimit:2, commandPayloadLimit:5};
 const splitRaster = {action:"raster-write",bytes:[1,2,3,4,5],logical_chunk:5,delay_after_each_physical_write_ms:0};
 assert.equal((await executePlan([command([1,2,3,4,5]),splitRaster],separated)).status,"completed");
 assert.deepEqual(separated.calls, [[1,2,3,4,5],[1,2],[3,4],[5]], "commands remain atomic while raster follows its physical limit");
+const boundaries = {...transport(),payloadLimit:3};
+await executePlan([{action:"raster-write",bytes:[0,1,2,3,4,5,6,7,8,9],logical_chunk:4,delay_after_each_physical_write_ms:0}],boundaries);
+assert.deepEqual(boundaries.calls.map(value => value.length),[3,1,3,1,2],"physical splitting must restart at logical boundaries");
+await assert.rejects(() => executePlan([], transport(), undefined, undefined, {additionalDelayMs:1,unsafeDiagnosticReductionMs:1}));
+const realSetTimeout = globalThis.setTimeout, observedDelays = [];
+globalThis.setTimeout = (callback, milliseconds) => { observedDelays.push(milliseconds); queueMicrotask(callback); return 1; };
+try {
+  await executePlan([{action:"delay",milliseconds:20}],transport(),undefined,undefined,{additionalDelayMs:5});
+  await executePlan([{action:"delay",milliseconds:20}],transport(),undefined,undefined,{unsafeDiagnosticReductionMs:7});
+} finally { globalThis.setTimeout = realSetTimeout; }
+assert.deepEqual(observedDelays,[25,13],"safe increases and explicit unsafe diagnostic reductions are exact");
 
 let controller = new AbortController(); controller.abort(); mock = transport();
 assert.equal((await executePlan([command([1])],mock,undefined,controller.signal)).status,"cancelled-before-send");

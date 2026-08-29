@@ -122,6 +122,28 @@ fn raster_is_physically_split_and_paced() {
     assert_eq!(p.bytes_written, 5)
 }
 #[test]
+fn physical_writes_restart_at_every_logical_chunk_boundary() {
+    let plan = Plan {
+        protocol: mb_printer_core::capabilities::Protocol::MSeries,
+        source_commit: SOURCE_COMMIT.into(),
+        actions: vec![Action::RasterWrite {
+            bytes: (0..10).collect(),
+            logical_chunk: 4,
+            delay_after_each_physical_write_ms: 20,
+        }],
+    };
+    let mut transport = Mock {
+        raster_limit: Some(3),
+        ..Default::default()
+    };
+    execute(&plan, &mut transport).unwrap();
+    assert_eq!(
+        transport.writes.iter().map(Vec::len).collect::<Vec<_>>(),
+        [3, 1, 3, 1, 2]
+    );
+    assert_eq!(transport.delays, [20; 5]);
+}
+#[test]
 fn atomic_preflight_occurs_before_writes() {
     let plan = Plan {
         protocol: mb_printer_core::capabilities::Protocol::MSeries,
@@ -168,4 +190,31 @@ fn command_and_raster_limits_are_independent() {
         transport.writes.iter().map(Vec::len).collect::<Vec<_>>(),
         [200, 64, 64, 2]
     );
+}
+
+#[test]
+fn timing_policy_preserves_or_only_explicitly_changes_reference_delays() {
+    let plan = Plan {
+        protocol: mb_printer_core::capabilities::Protocol::MSeries,
+        source_commit: SOURCE_COMMIT.into(),
+        actions: vec![
+            Action::Delay { milliseconds: 20 },
+            Action::RasterWrite {
+                bytes: vec![1, 2, 3],
+                logical_chunk: 3,
+                delay_after_each_physical_write_ms: 10,
+            },
+        ],
+    };
+    let mut safe = Mock::default();
+    execute_with_timing(&plan, &mut safe, ReferenceTiming::IncreaseBy(5)).unwrap();
+    assert_eq!(safe.delays, [25, 15, 15]);
+    let mut diagnostic = Mock::default();
+    execute_with_timing(
+        &plan,
+        &mut diagnostic,
+        ReferenceTiming::UnsafeDiagnosticReduceBy(7),
+    )
+    .unwrap();
+    assert_eq!(diagnostic.delays, [13, 3, 3]);
 }

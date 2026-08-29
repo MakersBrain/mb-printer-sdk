@@ -21,9 +21,9 @@ jobs:
     strategy:
       matrix:
         include:
-          - {os: ubuntu-latest, target: x86_64-unknown-linux-gnu}
-          - {os: macos-latest, target: aarch64-apple-darwin}
-          - {os: windows-latest, target: x86_64-pc-windows-msvc}
+          - {os: ubuntu-latest, target: x86_64-unknown-linux-gnu, features: 'serial,usb,ble-vendored-dbus,wifi,native-input,bluetooth-rfcomm'}
+          - {os: macos-latest, target: aarch64-apple-darwin, features: 'serial,usb,ble,wifi,native-input'}
+          - {os: windows-latest, target: x86_64-pc-windows-msvc, features: 'serial,usb,ble,wifi,native-input'}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -31,8 +31,7 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       - run: cargo check -p mb-printer-core -p mb-printer-native --target ${{ matrix.target }} --locked
-      - if: matrix.os == 'ubuntu-latest'
-        run: cargo check -p mb-printer-native --all-features --target ${{ matrix.target }} --locked
+      - run: cargo check -p mb-printer-native --features "${{ matrix.features }}" --target ${{ matrix.target }} --locked
   package:
     needs: [version, native-targets]
     runs-on: ubuntu-latest

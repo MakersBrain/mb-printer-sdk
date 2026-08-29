@@ -11,6 +11,12 @@ for (const name of fs.readdirSync(path.join(__dirname, "../../fixtures/v4/invali
 }
 const packed = Buffer.from(wasm.renderPacked(documentJson)).toString("hex");
 if (packed !== fixture.expectedPackedHex) throw new Error(`WASM raster diverged: ${packed}`);
+const renderGoldens = JSON.parse(fs.readFileSync(path.join(__dirname, "../../fixtures/wasm/render-goldens.json"), "utf8"));
+for (const test of renderGoldens.cases) {
+  const bytes = Buffer.from(wasm.renderPacked(JSON.stringify(test.document)));
+  const digest = require("node:crypto").createHash("sha256").update(bytes).digest("hex");
+  if (bytes.length !== test.expectedPackedLength || digest !== test.expectedPackedSha256) throw new Error(`WASM broad render golden diverged: ${test.name}`);
+}
 const imported = JSON.parse(wasm.importV3(JSON.stringify({version:3,widthMm:8,heightMm:1,dotsPerMm:10,elements:[]})));
 if (imported.version !== 4 || imported.media.width !== 8000) throw new Error("WASM v3 import diverged");
 if (wasm.evaluateTemplate("{{name|trim|upper}}", '{"name":" mb "}') !== "MB") throw new Error("WASM template diverged");

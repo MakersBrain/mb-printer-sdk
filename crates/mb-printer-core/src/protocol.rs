@@ -296,13 +296,12 @@ pub fn plan(printer: &PrinterDefinition, r: &Raster, o: &Options) -> Result<Plan
             cmd(&mut a, "P12 feed", vec![0x1b, 0x64, 0x0d])
         }
         Protocol::Tspl => {
-            let dpmm = 8.0 * (printer.dpi as f64 / 203.0);
             let w = o
                 .label_width_tenths_mm
-                .unwrap_or_else(|| ((r.width_bytes as f64 * 8.0 / dpmm) * 10.0).round() as u16);
+                .unwrap_or_else(|| tspl_tenths_mm(u64::from(r.width_bytes) * 8, printer.dpi));
             let h = o
                 .label_height_tenths_mm
-                .unwrap_or_else(|| ((r.height as f64 / dpmm) * 10.0).round() as u16);
+                .unwrap_or_else(|| tspl_tenths_mm(u64::from(r.height), printer.dpi));
             for s in [
                 fmt_mm("SIZE", w, Some(h)),
                 fmt_mm("GAP", o.gap_tenths_mm.max(0) as u16, Some(0)),
@@ -404,6 +403,12 @@ pub fn plan(printer: &PrinterDefinition, r: &Raster, o: &Options) -> Result<Plan
         source_commit: SOURCE_COMMIT.into(),
         actions: a,
     })
+}
+fn tspl_tenths_mm(dots: u64, dpi: u16) -> u16 {
+    // Preserve the Python/reference 8 dpmm at 203 DPI without target float math.
+    let numerator = dots.saturating_mul(2_030);
+    let denominator = u64::from(dpi).saturating_mul(8);
+    u16::try_from((numerator + denominator / 2) / denominator).unwrap_or(u16::MAX)
 }
 pub fn packbits(data: &[u8]) -> Vec<u8> {
     if data.is_empty() {

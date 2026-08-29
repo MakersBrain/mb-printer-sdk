@@ -44,11 +44,11 @@ after running `npm run build` in this package.
 ## PDF limitations
 
 PDF decoding uses the pinned memory-safe pure-Rust Hayro backend. Embedded PDF
-fonts are supported. To keep the browser module bounded and reproducible, Hayro's
-large built-in fallback-font bundle is disabled; PDFs that reference missing,
-non-embedded standard or CJK fonts can render incomplete text. Encrypted or
-password-protected PDFs are unsupported and are rejected. Malformed PDFs and
-pages over the configured raster limit are also rejected.
+fonts and Hayro's permissively licensed substitutes for the 14 standard PDF
+fonts are supported. CJK fonts must be embedded by the PDF producer; there is no
+portable implicit system-font lookup. Encrypted or password-protected PDFs are
+unsupported and return a distinct rejection. Malformed PDFs and pages over the
+configured raster limit are also rejected.
 
 Generated bindings use `wasm-bindgen-cli 0.2.127`. Package metadata records the
 generator and license, and the tarball includes the complete AGPL-3.0-or-later

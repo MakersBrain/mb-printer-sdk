@@ -17,6 +17,24 @@ pub enum WaitOutcome {
     Timeout,
     Unavailable,
 }
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ReferenceTiming {
+    #[default]
+    Preserve,
+    /// Safely add time to every reference pacing/fallback delay.
+    IncreaseBy(u64),
+    /// Explicit diagnostic-only reduction. This must never be persisted as a default.
+    UnsafeDiagnosticReduceBy(u64),
+}
+impl ReferenceTiming {
+    fn apply(self, reference_ms: u64) -> u64 {
+        match self {
+            Self::Preserve => reference_ms,
+            Self::IncreaseBy(extra) => reference_ms.saturating_add(extra),
+            Self::UnsafeDiagnosticReduceBy(reduction) => reference_ms.saturating_sub(reduction),
+        }
+    }
+}
 
 pub trait Transport {
     /// Maximum physical raster write. This is normally the negotiated MTU or
@@ -64,6 +82,13 @@ pub enum ExecuteError {
     Response { progress: Progress, message: String },
 }
 pub fn execute<T: Transport>(plan: &Plan, t: &mut T) -> Result<Progress, ExecuteError> {
+    execute_with_timing(plan, t, ReferenceTiming::Preserve)
+}
+pub fn execute_with_timing<T: Transport>(
+    plan: &Plan,
+    t: &mut T,
+    timing: ReferenceTiming,
+) -> Result<Progress, ExecuteError> {
     let limit = t.payload_limit();
     let command_limit = t.command_limit();
     if limit == 0 {
@@ -104,7 +129,7 @@ pub fn execute<T: Transport>(plan: &Plan, t: &mut T) -> Result<Progress, Execute
                 .subscribe_notifications()
                 .map_err(|message| fail(&p, message)),
             Action::Delay { milliseconds } => {
-                t.delay_monotonic(*milliseconds);
+                t.delay_monotonic(timing.apply(*milliseconds));
                 Ok(())
             }
             Action::CommandWrite { bytes, .. } => write(t, bytes, &mut p),
@@ -113,14 +138,15 @@ pub fn execute<T: Transport>(plan: &Plan, t: &mut T) -> Result<Progress, Execute
                 logical_chunk,
                 delay_after_each_physical_write_ms,
             } => {
-                let chunk = (*logical_chunk).min(limit);
                 let mut result = Ok(());
-                for piece in bytes.chunks(chunk) {
-                    if let Err(e) = write(t, piece, &mut p) {
-                        result = Err(e);
-                        break;
+                'logical: for logical in bytes.chunks(*logical_chunk) {
+                    for piece in logical.chunks(limit) {
+                        if let Err(e) = write(t, piece, &mut p) {
+                            result = Err(e);
+                            break 'logical;
+                        }
+                        t.delay_monotonic(timing.apply(*delay_after_each_physical_write_ms))
                     }
-                    t.delay_monotonic(*delay_after_each_physical_write_ms)
                 }
                 result
             }
@@ -131,7 +157,7 @@ pub fn execute<T: Transport>(plan: &Plan, t: &mut T) -> Result<Progress, Execute
             } => match t.wait_response(*timeout_ms) {
                 Ok(WaitOutcome::Response(bytes)) => validate(*validation, &bytes, &p),
                 Ok(WaitOutcome::Unavailable) if *fallback_delay_ms > 0 => {
-                    t.delay_monotonic(*fallback_delay_ms);
+                    t.delay_monotonic(timing.apply(*fallback_delay_ms));
                     Ok(())
                 }
                 // Brother's reference drivers use the status request as a

@@ -1,0 +1,19 @@
+{
+  "spdxLicense": "AGPL-3.0-or-later",
+  "provenance": {
+    "pythonAuthority": "fixtures/protocol/python-actions.json",
+    "upstreamCommit": "1f58d3f0e7f941b9143277cda828380149e56855",
+    "description": "Frozen typed-action contract layered over Python-authoritative write/delay traces"
+  },
+  "protocols": [
+    {"protocol":"m-series","model":"m03","rasterChunk":128,"rasterDelayMs":20,"subscribeCount":0,"waitCount":0,"waitTimeoutMs":0,"fallbackDelayMs":0},
+    {"protocol":"m02","model":"m02","rasterChunk":128,"rasterDelayMs":20,"subscribeCount":0,"waitCount":0,"waitTimeoutMs":0,"fallbackDelayMs":0},
+    {"protocol":"m04","model":"m04s-53","rasterChunk":256,"rasterDelayMs":20,"subscribeCount":0,"waitCount":0,"waitTimeoutMs":0,"fallbackDelayMs":0},
+    {"protocol":"m110","model":"m110","rasterChunk":128,"rasterDelayMs":20,"subscribeCount":0,"waitCount":0,"waitTimeoutMs":0,"fallbackDelayMs":0},
+    {"protocol":"d-series","model":"d-series","rasterChunk":128,"rasterDelayMs":20,"subscribeCount":0,"waitCount":0,"waitTimeoutMs":0,"fallbackDelayMs":0},
+    {"protocol":"p12","model":"p12","rasterChunk":128,"rasterDelayMs":20,"subscribeCount":1,"waitCount":6,"waitTimeoutMs":500,"fallbackDelayMs":500},
+    {"protocol":"tspl","model":"pm241","rasterChunk":512,"rasterDelayMs":10,"subscribeCount":0,"waitCount":0,"waitTimeoutMs":0,"fallbackDelayMs":0},
+    {"protocol":"brother","model":"ql-1100","rasterChunk":1024,"rasterDelayMs":0,"subscribeCount":0,"waitCount":1,"waitTimeoutMs":3000,"fallbackDelayMs":0}
+  ]
+}
+

@@ -13,9 +13,10 @@ one-page PNG/PDF export.
 Browser and Node packages are generated reproducibly with
 `scripts/build_wasm_packages.sh`; headless Chromium and Node runtime equivalence
 tests exercise the resulting bindings. PDF normalization uses pure-Rust Hayro.
-Embedded fonts are supported, while the large fallback-font bundle is disabled:
-PDFs with missing non-embedded standard/CJK fonts may render incomplete text.
-Encrypted/password-protected PDFs are unsupported and rejected.
+Embedded fonts and deterministic permissively licensed substitutes for PDF's 14
+required standard fonts are supported. Non-embedded CJK fonts remain unsupported
+and must be embedded by the PDF producer. Encrypted or
+password-protected PDFs are unsupported and return a distinct error.
 
 ```sh
 cargo test --workspace

@@ -63,6 +63,10 @@ fn rusb_discovery_never_uses_panicking_global_context() {
         result.is_ok(),
         "USB discovery must return Result instead of panicking"
     );
+    assert!(
+        std::panic::catch_unwind(usb::discover_rusb_bulk).is_ok(),
+        "bulk-interface discovery must also return Result instead of panicking"
+    );
 }
 
 #[cfg(feature = "serial")]
@@ -166,6 +170,28 @@ fn brother_wifi_commands_and_parsers_match_reference_contract() {
     let points = wifi::parse_access_points(b"VAP,\"-43-61-66-c3-a9\",x,x,6,-42,3,2\r\n");
     assert_eq!(points[0].ssid, "Café");
     assert!(points[0].enterprise && points[0].encrypted);
+}
+
+#[cfg(feature = "wifi")]
+#[test]
+fn ipp_status_parser_preserves_state_reasons_and_media() {
+    fn attribute(output: &mut Vec<u8>, tag: u8, name: &str, value: &[u8]) {
+        output.push(tag);
+        output.extend((name.len() as u16).to_be_bytes());
+        output.extend(name.as_bytes());
+        output.extend((value.len() as u16).to_be_bytes());
+        output.extend(value);
+    }
+    let mut body = vec![2, 0, 0, 0, 0, 0, 0, 1, 4];
+    attribute(&mut body, 0x23, "printer-state", &4u32.to_be_bytes());
+    attribute(&mut body, 0x44, "printer-state-reasons", b"media-empty");
+    attribute(&mut body, 0x44, "media-ready", b"roll_62x29mm");
+    body.push(3);
+    let status = wifi::parse_ipp_status(&body).unwrap();
+    assert_eq!(status.printer_state, Some(4));
+    assert_eq!(status.reasons, ["media-empty"]);
+    assert_eq!(status.media_ready, ["roll_62x29mm"]);
+    assert!(wifi::parse_ipp_status(&body[..body.len() - 2]).is_err());
 }
 
 #[cfg(feature = "native-input")]

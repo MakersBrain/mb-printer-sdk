@@ -9,6 +9,8 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum PdfImportError {
+    #[error("encrypted/password-protected PDFs are unsupported")]
+    Encrypted,
     #[error("PDF is malformed or unsupported")]
     Invalid,
     #[error("PDF contains no pages")]
@@ -26,6 +28,12 @@ pub fn normalize(
 ) -> Result<Vec<NormalizedPage>, PdfImportError> {
     if dpi == 0 || max_pixels_per_page == 0 {
         return Err(PdfImportError::TooLarge);
+    }
+    if bytes
+        .windows(b"/Encrypt".len())
+        .any(|window| window == b"/Encrypt")
+    {
+        return Err(PdfImportError::Encrypted);
     }
     let pdf = Pdf::new(bytes).map_err(|_| PdfImportError::Invalid)?;
     if pdf.pages().is_empty() {

@@ -318,6 +318,7 @@ pub mod usb {
     pub struct UsbTransport<B> {
         backend: B,
         payload_limit: usize,
+        command_limit: usize,
         response_limit: usize,
     }
     impl<B> UsbTransport<B> {
@@ -325,6 +326,20 @@ pub mod usb {
             Self {
                 backend,
                 payload_limit,
+                command_limit: payload_limit,
+                response_limit,
+            }
+        }
+        pub fn new_with_limits(
+            backend: B,
+            payload_limit: usize,
+            command_limit: usize,
+            response_limit: usize,
+        ) -> Self {
+            Self {
+                backend,
+                payload_limit,
+                command_limit,
                 response_limit,
             }
         }
@@ -335,6 +350,9 @@ pub mod usb {
     impl<B: UsbBulkBackend> Transport for UsbTransport<B> {
         fn payload_limit(&self) -> usize {
             self.payload_limit
+        }
+        fn command_limit(&self) -> usize {
+            self.command_limit
         }
         fn subscribe_notifications(&mut self) -> Result<(), String> {
             Ok(())
@@ -359,6 +377,19 @@ pub mod usb {
         pub bus: u8,
         pub address: u8,
     }
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct UsbBulkCandidate {
+        pub identity: UsbIdentity,
+        pub interface: u8,
+        pub alternate_setting: u8,
+        pub out_endpoint: u8,
+        pub in_endpoint: Option<u8>,
+        pub max_packet_size: u16,
+        pub interface_class: u8,
+        pub manufacturer: Option<String>,
+        pub product: Option<String>,
+        pub serial_number: Option<String>,
+    }
     pub fn discover_rusb() -> Result<Vec<UsbIdentity>, String> {
         let context = rusb::Context::new()
             .map_err(|error| format!("USB context initialization failed: {error}"))?;
@@ -378,6 +409,81 @@ pub mod usb {
         found.sort_by_key(|item| (item.bus, item.address));
         Ok(found)
     }
+    /// Discover bulk-write interfaces without relying on rusb's panicking global context.
+    /// Printer-class interfaces are ordered before vendor-specific alternatives.
+    pub fn discover_rusb_bulk() -> Result<Vec<UsbBulkCandidate>, String> {
+        let context = rusb::Context::new()
+            .map_err(|error| format!("USB context initialization failed: {error}"))?;
+        let devices = context.devices().map_err(|error| error.to_string())?;
+        let mut found = Vec::new();
+        for device in devices.iter() {
+            let descriptor = device
+                .device_descriptor()
+                .map_err(|error| error.to_string())?;
+            let identity = UsbIdentity {
+                vendor_id: descriptor.vendor_id(),
+                product_id: descriptor.product_id(),
+                bus: device.bus_number(),
+                address: device.address(),
+            };
+            let strings = device.open().ok().map(|handle| {
+                (
+                    handle.read_manufacturer_string_ascii(&descriptor).ok(),
+                    handle.read_product_string_ascii(&descriptor).ok(),
+                    handle.read_serial_number_string_ascii(&descriptor).ok(),
+                )
+            });
+            for index in 0..descriptor.num_configurations() {
+                let configuration = device
+                    .config_descriptor(index)
+                    .map_err(|error| error.to_string())?;
+                for interface in configuration.interfaces() {
+                    for interface_descriptor in interface.descriptors() {
+                        let mut out = None;
+                        let mut input = None;
+                        for endpoint in interface_descriptor.endpoint_descriptors() {
+                            if endpoint.transfer_type() != rusb::TransferType::Bulk {
+                                continue;
+                            }
+                            match endpoint.direction() {
+                                rusb::Direction::Out if out.is_none() => {
+                                    out = Some((endpoint.address(), endpoint.max_packet_size()))
+                                }
+                                rusb::Direction::In if input.is_none() => {
+                                    input = Some(endpoint.address())
+                                }
+                                _ => {}
+                            }
+                        }
+                        if let Some((out_endpoint, max_packet_size)) = out {
+                            found.push(UsbBulkCandidate {
+                                identity,
+                                interface: interface_descriptor.interface_number(),
+                                alternate_setting: interface_descriptor.setting_number(),
+                                out_endpoint,
+                                in_endpoint: input,
+                                max_packet_size,
+                                interface_class: interface_descriptor.class_code(),
+                                manufacturer: strings.as_ref().and_then(|value| value.0.clone()),
+                                product: strings.as_ref().and_then(|value| value.1.clone()),
+                                serial_number: strings.as_ref().and_then(|value| value.2.clone()),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        found.sort_by_key(|candidate| {
+            (
+                candidate.interface_class != 7,
+                candidate.identity.bus,
+                candidate.identity.address,
+                candidate.interface,
+                candidate.alternate_setting,
+            )
+        });
+        Ok(found)
+    }
     pub struct RusbBulkBackend {
         handle: rusb::DeviceHandle<rusb::Context>,
         out_endpoint: u8,
@@ -388,6 +494,23 @@ pub mod usb {
         pub fn open(
             identity: UsbIdentity,
             interface: u8,
+            out_endpoint: u8,
+            in_endpoint: Option<u8>,
+            timeout_ms: u64,
+        ) -> Result<Self, String> {
+            Self::open_with_setting(
+                identity,
+                interface,
+                0,
+                out_endpoint,
+                in_endpoint,
+                timeout_ms,
+            )
+        }
+        pub fn open_with_setting(
+            identity: UsbIdentity,
+            interface: u8,
+            alternate_setting: u8,
             out_endpoint: u8,
             in_endpoint: Option<u8>,
             timeout_ms: u64,
@@ -414,6 +537,11 @@ pub mod usb {
             handle
                 .claim_interface(interface)
                 .map_err(|error| error.to_string())?;
+            if alternate_setting != 0 {
+                handle
+                    .set_alternate_setting(interface, alternate_setting)
+                    .map_err(|error| error.to_string())?;
+            }
             Ok(Self {
                 handle,
                 out_endpoint,
@@ -471,6 +599,47 @@ pub mod usb {
             payload_limit,
             response_limit,
         ))
+    }
+    pub fn open_rusb_with_limits(
+        candidate: &UsbBulkCandidate,
+        raster_limit: usize,
+        command_limit: usize,
+        response_limit: usize,
+        timeout_ms: u64,
+    ) -> Result<RusbTransport, String> {
+        Ok(UsbTransport::new_with_limits(
+            RusbBulkBackend::open_with_setting(
+                candidate.identity,
+                candidate.interface,
+                candidate.alternate_setting,
+                candidate.out_endpoint,
+                candidate.in_endpoint,
+                timeout_ms,
+            )?,
+            raster_limit
+                .min(usize::from(candidate.max_packet_size))
+                .max(1),
+            command_limit,
+            response_limit,
+        ))
+    }
+    pub fn open_rusb_auto(
+        identity: UsbIdentity,
+        command_limit: usize,
+        response_limit: usize,
+        timeout_ms: u64,
+    ) -> Result<RusbTransport, String> {
+        let candidate = discover_rusb_bulk()?
+            .into_iter()
+            .find(|candidate| candidate.identity == identity)
+            .ok_or_else(|| "USB device has no bulk OUT interface".to_owned())?;
+        open_rusb_with_limits(
+            &candidate,
+            usize::from(candidate.max_packet_size),
+            command_limit,
+            response_limit,
+            timeout_ms,
+        )
     }
 }
 
@@ -533,43 +702,47 @@ pub mod ble {
     }
     pub fn discover_btleplug(timeout_ms: u64) -> Result<Vec<DiscoveredPrinter>, String> {
         let runtime = tokio::runtime::Runtime::new().map_err(|error| error.to_string())?;
-        runtime.block_on(async move {
-            let manager = btleplug::platform::Manager::new()
+        runtime.block_on(discover_btleplug_async(timeout_ms))
+    }
+    /// Async BLE discovery for applications that already own a Tokio runtime.
+    pub async fn discover_btleplug_async(
+        timeout_ms: u64,
+    ) -> Result<Vec<DiscoveredPrinter>, String> {
+        let manager = btleplug::platform::Manager::new()
+            .await
+            .map_err(|error| error.to_string())?;
+        let adapters = manager
+            .adapters()
+            .await
+            .map_err(|error| error.to_string())?;
+        let mut found = Vec::new();
+        for adapter in adapters {
+            adapter
+                .start_scan(ScanFilter::default())
                 .await
                 .map_err(|error| error.to_string())?;
-            let adapters = manager
-                .adapters()
+            tokio::time::sleep(Duration::from_millis(timeout_ms)).await;
+            for peripheral in adapter
+                .peripherals()
                 .await
-                .map_err(|error| error.to_string())?;
-            let mut found = Vec::new();
-            for adapter in adapters {
-                adapter
-                    .start_scan(ScanFilter::default())
+                .map_err(|error| error.to_string())?
+            {
+                let properties = peripheral
+                    .properties()
                     .await
                     .map_err(|error| error.to_string())?;
-                tokio::time::sleep(Duration::from_millis(timeout_ms)).await;
-                for peripheral in adapter
-                    .peripherals()
-                    .await
-                    .map_err(|error| error.to_string())?
-                {
-                    let properties = peripheral
-                        .properties()
-                        .await
-                        .map_err(|error| error.to_string())?;
-                    let address = peripheral.address().to_string();
-                    found.push(DiscoveredPrinter {
-                        transport: "ble",
-                        id: address.clone(),
-                        name: properties.and_then(|value| value.local_name),
-                        endpoint: address,
-                    });
-                }
+                let address = peripheral.address().to_string();
+                found.push(DiscoveredPrinter {
+                    transport: "ble",
+                    id: address.clone(),
+                    name: properties.and_then(|value| value.local_name),
+                    endpoint: address,
+                });
             }
-            found.sort_by(|left, right| left.endpoint.cmp(&right.endpoint));
-            found.dedup_by(|left, right| left.endpoint == right.endpoint);
-            Ok(found)
-        })
+        }
+        found.sort_by(|left, right| left.endpoint.cmp(&right.endpoint));
+        found.dedup_by(|left, right| left.endpoint == right.endpoint);
+        Ok(found)
     }
     pub struct BtleplugDiscovery;
     impl BleDiscoveryBackend for BtleplugDiscovery {
@@ -728,11 +901,160 @@ pub mod ble {
             payload_limit,
         ))
     }
+    /// Tokio-native BLE transport. It avoids creating or blocking an internal runtime.
+    pub struct AsyncBtleplugTransport {
+        peripheral: btleplug::platform::Peripheral,
+        write: btleplug::api::Characteristic,
+        notify: Option<btleplug::api::Characteristic>,
+        notifications: tokio::sync::mpsc::Receiver<Vec<u8>>,
+        pub payload_limit: usize,
+    }
+    impl AsyncBtleplugTransport {
+        pub async fn connect(
+            address: &str,
+            write_uuid: Option<uuid::Uuid>,
+            notify_uuid: Option<uuid::Uuid>,
+            payload_limit: usize,
+            scan_timeout_ms: u64,
+        ) -> Result<Self, String> {
+            if payload_limit == 0 {
+                return Err("BLE payload limit must be positive".into());
+            }
+            let manager = btleplug::platform::Manager::new()
+                .await
+                .map_err(|error| error.to_string())?;
+            let adapters = manager
+                .adapters()
+                .await
+                .map_err(|error| error.to_string())?;
+            let mut selected = None;
+            for adapter in adapters {
+                adapter
+                    .start_scan(ScanFilter::default())
+                    .await
+                    .map_err(|error| error.to_string())?;
+                tokio::time::sleep(Duration::from_millis(scan_timeout_ms)).await;
+                for peripheral in adapter
+                    .peripherals()
+                    .await
+                    .map_err(|error| error.to_string())?
+                {
+                    if peripheral
+                        .address()
+                        .to_string()
+                        .eq_ignore_ascii_case(address)
+                    {
+                        selected = Some(peripheral);
+                        break;
+                    }
+                }
+                if selected.is_some() {
+                    break;
+                }
+            }
+            let peripheral =
+                selected.ok_or_else(|| format!("BLE peripheral not found: {address}"))?;
+            if !peripheral
+                .is_connected()
+                .await
+                .map_err(|error| error.to_string())?
+            {
+                peripheral
+                    .connect()
+                    .await
+                    .map_err(|error| error.to_string())?;
+            }
+            peripheral
+                .discover_services()
+                .await
+                .map_err(|error| error.to_string())?;
+            let characteristics = peripheral.characteristics();
+            let write = characteristics
+                .iter()
+                .find(|item| {
+                    write_uuid.map_or(
+                        item.properties.intersects(
+                            CharPropFlags::WRITE_WITHOUT_RESPONSE | CharPropFlags::WRITE,
+                        ),
+                        |expected| item.uuid == expected,
+                    )
+                })
+                .cloned()
+                .ok_or_else(|| "BLE write characteristic not found".to_owned())?;
+            let notify = characteristics
+                .iter()
+                .find(|item| {
+                    notify_uuid.map_or(
+                        item.properties.contains(CharPropFlags::NOTIFY),
+                        |expected| item.uuid == expected,
+                    )
+                })
+                .cloned();
+            let mut stream = peripheral
+                .notifications()
+                .await
+                .map_err(|error| error.to_string())?;
+            let (sender, notifications) = tokio::sync::mpsc::channel(32);
+            tokio::spawn(async move {
+                while let Some(notification) = stream.next().await {
+                    if sender.send(notification.value).await.is_err() {
+                        break;
+                    }
+                }
+            });
+            Ok(Self {
+                peripheral,
+                write,
+                notify,
+                notifications,
+                payload_limit,
+            })
+        }
+        pub async fn subscribe_notifications(&self) -> Result<bool, String> {
+            let Some(characteristic) = &self.notify else {
+                return Ok(false);
+            };
+            self.peripheral
+                .subscribe(characteristic)
+                .await
+                .map_err(|error| error.to_string())?;
+            Ok(true)
+        }
+        pub async fn write(&self, bytes: &[u8]) -> Result<(), String> {
+            if bytes.len() > self.payload_limit {
+                return Err("BLE write exceeds declared payload limit".into());
+            }
+            self.peripheral
+                .write(&self.write, bytes, WriteType::WithoutResponse)
+                .await
+                .map_err(|error| error.to_string())
+        }
+        pub async fn wait_notification(
+            &mut self,
+            timeout_ms: u64,
+        ) -> Result<Option<Vec<u8>>, String> {
+            match tokio::time::timeout(Duration::from_millis(timeout_ms), self.notifications.recv())
+                .await
+            {
+                Ok(value) => Ok(value),
+                Err(_) => Ok(None),
+            }
+        }
+        pub async fn disconnect(&self) -> Result<(), String> {
+            self.peripheral
+                .disconnect()
+                .await
+                .map_err(|error| error.to_string())
+        }
+    }
 }
 
 #[cfg(feature = "wifi")]
 pub mod wifi {
     use crate::Transport;
+    use std::io::{Read, Write};
+    use std::net::{TcpStream, ToSocketAddrs};
+    use std::time::Duration;
     pub const PJL_HEADER: &[u8] = b"\x1b%-12345X@PJL\r\n";
     pub const PJL_FOOTER: &[u8] = b"\x1b%-12345X";
     pub const REBOOT_COMMAND: &[u8] = &[
@@ -757,6 +1079,191 @@ pub mod wifi {
     }
     pub trait WifiProvisioner {
         fn provision(&mut self, credentials: &WifiCredentials) -> Result<(), String>;
+    }
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct IppEndpoint {
+        pub host: String,
+        pub port: u16,
+        pub resource: String,
+    }
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct IppPrinterStatus {
+        pub printer_state: Option<u32>,
+        pub reasons: Vec<String>,
+        pub media_ready: Vec<String>,
+    }
+    pub trait IppStatusBackend {
+        fn query_ipp_status(
+            &self,
+            endpoint: &IppEndpoint,
+            timeout_ms: u64,
+        ) -> Result<IppPrinterStatus, String>;
+    }
+    #[derive(Debug, Default, Clone, Copy)]
+    pub struct TcpIppBackend;
+    impl IppStatusBackend for TcpIppBackend {
+        fn query_ipp_status(
+            &self,
+            endpoint: &IppEndpoint,
+            timeout_ms: u64,
+        ) -> Result<IppPrinterStatus, String> {
+            query_ipp_status(endpoint, timeout_ms)
+        }
+    }
+    pub fn discover_ipp(
+        endpoints: &[IppEndpoint],
+        timeout_ms: u64,
+    ) -> Vec<(IppEndpoint, IppPrinterStatus)> {
+        endpoints
+            .iter()
+            .filter_map(|endpoint| {
+                query_ipp_status(endpoint, timeout_ms)
+                    .ok()
+                    .map(|status| (endpoint.clone(), status))
+            })
+            .collect()
+    }
+    pub fn query_ipp_status(
+        endpoint: &IppEndpoint,
+        timeout_ms: u64,
+    ) -> Result<IppPrinterStatus, String> {
+        if endpoint.host.is_empty() || !endpoint.resource.starts_with('/') || timeout_ms == 0 {
+            return Err("invalid IPP endpoint".into());
+        }
+        let address = (endpoint.host.as_str(), endpoint.port)
+            .to_socket_addrs()
+            .map_err(|error| error.to_string())?
+            .next()
+            .ok_or_else(|| "IPP endpoint did not resolve".to_owned())?;
+        let timeout = Duration::from_millis(timeout_ms);
+        let mut stream =
+            TcpStream::connect_timeout(&address, timeout).map_err(|e| e.to_string())?;
+        stream
+            .set_read_timeout(Some(timeout))
+            .map_err(|e| e.to_string())?;
+        stream
+            .set_write_timeout(Some(timeout))
+            .map_err(|e| e.to_string())?;
+        let body = ipp_status_request(endpoint);
+        let header = format!(
+            "POST {} HTTP/1.1\r\nHost: {}:{}\r\nContent-Type: application/ipp\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            endpoint.resource,
+            endpoint.host,
+            endpoint.port,
+            body.len()
+        );
+        stream
+            .write_all(header.as_bytes())
+            .map_err(|e| e.to_string())?;
+        stream.write_all(&body).map_err(|e| e.to_string())?;
+        let mut response = Vec::new();
+        stream
+            .take(4 * 1024 * 1024)
+            .read_to_end(&mut response)
+            .map_err(|e| e.to_string())?;
+        let split = response
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .ok_or_else(|| "invalid IPP HTTP response".to_owned())?;
+        let headers = std::str::from_utf8(&response[..split]).map_err(|e| e.to_string())?;
+        if !headers
+            .lines()
+            .next()
+            .is_some_and(|line| line.contains(" 200 "))
+        {
+            return Err("IPP HTTP request failed".into());
+        }
+        parse_ipp_status(&response[split + 4..])
+    }
+    fn ipp_attribute(output: &mut Vec<u8>, tag: u8, name: &str, value: &[u8]) {
+        output.push(tag);
+        output.extend(u16::try_from(name.len()).unwrap_or(u16::MAX).to_be_bytes());
+        output.extend(name.as_bytes());
+        output.extend(u16::try_from(value.len()).unwrap_or(u16::MAX).to_be_bytes());
+        output.extend(value);
+    }
+    fn ipp_status_request(endpoint: &IppEndpoint) -> Vec<u8> {
+        let mut body = vec![2, 0, 0, 0x0b, 0, 0, 0, 1, 1];
+        ipp_attribute(&mut body, 0x47, "attributes-charset", b"utf-8");
+        ipp_attribute(&mut body, 0x48, "attributes-natural-language", b"en");
+        let uri = format!(
+            "ipp://{}:{}{}",
+            endpoint.host, endpoint.port, endpoint.resource
+        );
+        ipp_attribute(&mut body, 0x45, "printer-uri", uri.as_bytes());
+        for (index, name) in ["printer-state", "printer-state-reasons", "media-ready"]
+            .into_iter()
+            .enumerate()
+        {
+            ipp_attribute(
+                &mut body,
+                0x44,
+                if index == 0 {
+                    "requested-attributes"
+                } else {
+                    ""
+                },
+                name.as_bytes(),
+            );
+        }
+        body.push(3);
+        body
+    }
+    pub fn parse_ipp_status(body: &[u8]) -> Result<IppPrinterStatus, String> {
+        if body.len() < 9 || u16::from_be_bytes([body[2], body[3]]) >= 0x0100 {
+            return Err("IPP operation failed".into());
+        }
+        let mut offset = 8usize;
+        let mut previous_name = String::new();
+        let mut status = IppPrinterStatus {
+            printer_state: None,
+            reasons: Vec::new(),
+            media_ready: Vec::new(),
+        };
+        while offset < body.len() {
+            let tag = body[offset];
+            offset += 1;
+            if tag == 3 {
+                return Ok(status);
+            }
+            if tag <= 0x0f {
+                previous_name.clear();
+                continue;
+            }
+            if offset + 2 > body.len() {
+                return Err("truncated IPP attribute".into());
+            }
+            let name_length = usize::from(u16::from_be_bytes([body[offset], body[offset + 1]]));
+            offset += 2;
+            if offset + name_length + 2 > body.len() {
+                return Err("truncated IPP attribute".into());
+            }
+            if name_length > 0 {
+                previous_name = String::from_utf8(body[offset..offset + name_length].to_vec())
+                    .map_err(|error| error.to_string())?;
+            }
+            offset += name_length;
+            let value_length = usize::from(u16::from_be_bytes([body[offset], body[offset + 1]]));
+            offset += 2;
+            if offset + value_length > body.len() {
+                return Err("truncated IPP value".into());
+            }
+            let value = &body[offset..offset + value_length];
+            offset += value_length;
+            match previous_name.as_str() {
+                "printer-state" if tag == 0x23 && value.len() == 4 => {
+                    status.printer_state = Some(u32::from_be_bytes(value.try_into().unwrap()))
+                }
+                "printer-state-reasons" => status
+                    .reasons
+                    .push(String::from_utf8_lossy(value).into_owned()),
+                "media-ready" => status
+                    .media_ready
+                    .push(String::from_utf8_lossy(value).into_owned()),
+                _ => {}
+            }
+        }
+        Err("IPP response has no end marker".into())
     }
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct AccessPoint {

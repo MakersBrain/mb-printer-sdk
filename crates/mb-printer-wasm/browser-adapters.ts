@@ -121,6 +121,12 @@ export class WebUsbTransport implements BrowserTransport {
 export interface ExecutionProgress { lastCompletedAction: number; bytesWritten: number; potentiallyAcceptedWrite: boolean }
 export type ExecutionStatus = "completed" | "cancelled-before-send" | "cancelled-partial" | "outcome-unknown";
 export interface ExecutionResult extends ExecutionProgress { status: ExecutionStatus; error?: string }
+export interface ReferenceTiming {
+  /** Safe additive pacing applied to every reference delay. */
+  additionalDelayMs?: number;
+  /** Diagnostic-only reduction; callers must never persist this as a normal default. */
+  unsafeDiagnosticReductionMs?: number;
+}
 const delay = (milliseconds: number, signal?: AbortSignal): Promise<void> => {
   checkAbort(signal);
   if (milliseconds <= 0) return Promise.resolve();
@@ -146,8 +152,13 @@ const validResponse = (validation: string, bytes: Uint8Array) => validation === 
 
 /** Executes exactly once. Runtime ambiguity is returned and never retried automatically. */
 export async function executePlan(actions: PlanAction[], transport: BrowserTransport,
-  progress?: (state: ExecutionProgress) => void, signal?: AbortSignal): Promise<ExecutionResult> {
+  progress?: (state: ExecutionProgress) => void, signal?: AbortSignal,
+  timing: ReferenceTiming = {}): Promise<ExecutionResult> {
   preflight(actions, transport.payloadLimit, transport.commandPayloadLimit ?? transport.payloadLimit);
+  const increase = timing.additionalDelayMs ?? 0, reduction = timing.unsafeDiagnosticReductionMs ?? 0;
+  if (![increase, reduction].every(value => Number.isSafeInteger(value) && value >= 0)) throw new Error("invalid timing override");
+  if (increase > 0 && reduction > 0) throw new Error("timing increase and unsafe reduction are mutually exclusive");
+  const paced = (reference: number) => Math.max(0, reference + increase - reduction);
   const state: ExecutionProgress = { lastCompletedAction: -1, bytesWritten: 0, potentiallyAcceptedWrite: false };
   const done = (status: ExecutionStatus, error?: unknown): ExecutionResult => ({ ...state, status,
     ...(error === undefined ? {} : { error: error instanceof Error ? error.message : String(error) }) });
@@ -161,17 +172,20 @@ export async function executePlan(actions: PlanAction[], transport: BrowserTrans
     try {
       checkAbort(signal);
       if (action.action === "subscribe-notifications") await transport.subscribeNotifications(signal);
-      else if (action.action === "delay") await delay(action.milliseconds, signal);
+      else if (action.action === "delay") await delay(paced(action.milliseconds), signal);
       else if (action.action === "command-write") { const failed = await write(Uint8Array.from(action.bytes), "command"); if (failed) return failed; }
       else if (action.action === "raster-write") {
-        const bytes = Uint8Array.from(action.bytes), size = Math.min(action.logical_chunk, transport.payloadLimit);
-        for (let offset = 0; offset < bytes.length; offset += size) {
-          const failed = await write(bytes.slice(offset, offset + size), "raster"); if (failed) return failed;
-          await delay(action.delay_after_each_physical_write_ms, signal);
+        const bytes = Uint8Array.from(action.bytes);
+        for (let logicalOffset = 0; logicalOffset < bytes.length; logicalOffset += action.logical_chunk) {
+          const logical = bytes.slice(logicalOffset, logicalOffset + action.logical_chunk);
+          for (let offset = 0; offset < logical.length; offset += transport.payloadLimit) {
+            const failed = await write(logical.slice(offset, offset + transport.payloadLimit), "raster"); if (failed) return failed;
+            await delay(paced(action.delay_after_each_physical_write_ms), signal);
+          }
         }
       } else if (action.action === "wait-for-response") {
         const reply = await transport.waitForResponse(action.timeout_ms, signal);
-        if (reply.kind === "unavailable" && action.fallback_delay_ms > 0) await delay(action.fallback_delay_ms, signal);
+        if (reply.kind === "unavailable" && action.fallback_delay_ms > 0) await delay(paced(action.fallback_delay_ms), signal);
         else if ((reply.kind === "unavailable" || reply.kind === "timeout") && action.validation === "brother-status32") { /* best-effort frozen Brother preflight */ }
         else if (reply.kind === "unavailable") return done("outcome-unknown", `notifications unavailable after action ${index}`);
         else if (reply.kind === "timeout") return done("outcome-unknown", `response timeout after action ${index}`);
