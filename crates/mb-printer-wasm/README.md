@@ -19,6 +19,9 @@ strict camel-case protocol option object, including `copies`, `density`, feed,
 speed, offsets, TSPL media dimensions, and Brother cut/compression settings.
 Unknown option fields and unsafe zero copy/cut cadence values are rejected.
 `renderProtocolPlan` remains the deterministic default-options shorthand.
+The authoritative Draft 2020-12 document schema is published at
+`@makersbrain/printer-sdk/schema.json`; generated structural declarations remain
+available from `@makersbrain/printer-sdk/schema`.
 
 CommonJS Node applications use the synchronous Node export:
 

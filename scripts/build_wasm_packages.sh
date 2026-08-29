@@ -20,3 +20,4 @@ rm -f "$crate/pkg/node/mb_printer_wasm_bg.wasm" \
 python3 "$sdk_root/scripts/stamp_wasm_bindings.py" "$crate/pkg"
 cp "$sdk_root/LICENSE" "$crate/LICENSE"
 (cd "$crate" && npm run build:adapters && npm run check:types)
+cp "$sdk_root/schema/mb-label-v4.schema.json" "$crate/dist/mb-label-v4.schema.json"
