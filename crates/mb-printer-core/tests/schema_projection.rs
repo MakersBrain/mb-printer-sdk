@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 use mb_printer_core::Document;
-use mb_printer_core::schema_types_generated::{ELEMENT_DISCRIMINATORS, SchemaElementKind};
+use mb_printer_core::schema_types_generated::{
+    ELEMENT_DISCRIMINATORS, MbLabelV4Dto, SchemaElementKind,
+};
 use std::collections::BTreeSet;
 
 #[test]
@@ -35,4 +37,8 @@ fn generated_schema_projection_conforms_to_rust_model() {
         serde_json::to_string(&SchemaElementKind::QrCode).unwrap(),
         "\"qr-code\""
     );
+    let source: serde_json::Value =
+        serde_json::from_str(include_str!("../fixtures/v4/valid/all-elements.json")).unwrap();
+    let generated: MbLabelV4Dto = serde_json::from_value(source.clone()).unwrap();
+    assert_eq!(serde_json::to_value(generated).unwrap(), source);
 }

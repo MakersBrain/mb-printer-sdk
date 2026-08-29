@@ -37,3 +37,405 @@ pub const ELEMENT_DISCRIMINATORS: &[&str] = &[
     "qr-code",
     "group",
 ];
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BoundsDto {
+    #[serde(rename = "height")]
+    pub height: i64,
+    #[serde(rename = "width")]
+    pub width: i64,
+    #[serde(rename = "x")]
+    pub x: i64,
+    #[serde(rename = "y")]
+    pub y: i64,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MediaDto {
+    #[serde(
+        rename = "continuous",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub continuous: Option<bool>,
+    #[serde(rename = "dpi")]
+    pub dpi: i64,
+    #[serde(rename = "height")]
+    pub height: i64,
+    #[serde(rename = "orientation")]
+    pub orientation: serde_json::Value,
+    #[serde(rename = "printableBounds")]
+    pub printable_bounds: BoundsDto,
+    #[serde(rename = "shape")]
+    pub shape: serde_json::Value,
+    #[serde(rename = "unit")]
+    pub unit: serde_json::Value,
+    #[serde(rename = "width")]
+    pub width: i64,
+    #[serde(rename = "zones", default, skip_serializing_if = "Option::is_none")]
+    pub zones: Option<Vec<serde_json::Value>>,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CoordinatesDto {
+    #[serde(rename = "origin")]
+    pub origin: serde_json::Value,
+    #[serde(rename = "rounding")]
+    pub rounding: serde_json::Value,
+    #[serde(rename = "unit")]
+    pub unit: serde_json::Value,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResourceDto {
+    #[serde(rename = "dataBase64")]
+    pub data_base64: String,
+    #[serde(rename = "id")]
+    pub id: String,
+    #[serde(rename = "mediaType")]
+    pub media_type: String,
+    #[serde(rename = "sha256")]
+    pub sha256: String,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TransformDto {
+    #[serde(rename = "height")]
+    pub height: i64,
+    #[serde(
+        rename = "rotationMillidegrees",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub rotation_millidegrees: Option<i64>,
+    #[serde(rename = "width")]
+    pub width: i64,
+    #[serde(rename = "x")]
+    pub x: i64,
+    #[serde(rename = "y")]
+    pub y: i64,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConstraintsDto {
+    #[serde(
+        rename = "preserveAspect",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub preserve_aspect: Option<bool>,
+    #[serde(rename = "zone", default, skip_serializing_if = "Option::is_none")]
+    pub zone: Option<String>,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CommonDto {
+    #[serde(
+        rename = "constraints",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub constraints: Option<ConstraintsDto>,
+    #[serde(rename = "groupId", default, skip_serializing_if = "Option::is_none")]
+    pub group_id: Option<String>,
+    #[serde(rename = "id")]
+    pub id: String,
+    #[serde(rename = "locked", default, skip_serializing_if = "Option::is_none")]
+    pub locked: Option<bool>,
+    #[serde(rename = "transform")]
+    pub transform: TransformDto,
+    #[serde(rename = "visible", default, skip_serializing_if = "Option::is_none")]
+    pub visible: Option<bool>,
+    #[serde(rename = "zOrder")]
+    pub z_order: i64,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum SchemaElementDto {
+    #[serde(rename = "text")]
+    Text {
+        #[serde(
+            rename = "constraints",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        constraints: Option<ConstraintsDto>,
+        #[serde(
+            rename = "fontResource",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        font_resource: Option<String>,
+        #[serde(rename = "fontSize")]
+        font_size: i64,
+        #[serde(rename = "groupId", default, skip_serializing_if = "Option::is_none")]
+        group_id: Option<String>,
+        #[serde(rename = "horizontalAlign")]
+        horizontal_align: serde_json::Value,
+        #[serde(rename = "id")]
+        id: String,
+        #[serde(rename = "locked", default, skip_serializing_if = "Option::is_none")]
+        locked: Option<bool>,
+        #[serde(rename = "overflow")]
+        overflow: serde_json::Value,
+        #[serde(rename = "text")]
+        text: String,
+        #[serde(rename = "transform")]
+        transform: TransformDto,
+        #[serde(rename = "verticalAlign")]
+        vertical_align: serde_json::Value,
+        #[serde(rename = "visible", default, skip_serializing_if = "Option::is_none")]
+        visible: Option<bool>,
+        #[serde(rename = "zOrder")]
+        z_order: i64,
+    },
+    #[serde(rename = "image")]
+    Image {
+        #[serde(
+            rename = "constraints",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        constraints: Option<ConstraintsDto>,
+        #[serde(rename = "crop", default, skip_serializing_if = "Option::is_none")]
+        crop: Option<BoundsDto>,
+        #[serde(rename = "groupId", default, skip_serializing_if = "Option::is_none")]
+        group_id: Option<String>,
+        #[serde(rename = "id")]
+        id: String,
+        #[serde(rename = "locked", default, skip_serializing_if = "Option::is_none")]
+        locked: Option<bool>,
+        #[serde(rename = "resource")]
+        resource: String,
+        #[serde(rename = "transform")]
+        transform: TransformDto,
+        #[serde(rename = "visible", default, skip_serializing_if = "Option::is_none")]
+        visible: Option<bool>,
+        #[serde(rename = "zOrder")]
+        z_order: i64,
+    },
+    #[serde(rename = "svg")]
+    Svg {
+        #[serde(
+            rename = "constraints",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        constraints: Option<ConstraintsDto>,
+        #[serde(rename = "groupId", default, skip_serializing_if = "Option::is_none")]
+        group_id: Option<String>,
+        #[serde(rename = "id")]
+        id: String,
+        #[serde(rename = "locked", default, skip_serializing_if = "Option::is_none")]
+        locked: Option<bool>,
+        #[serde(rename = "resource")]
+        resource: String,
+        #[serde(rename = "transform")]
+        transform: TransformDto,
+        #[serde(rename = "visible", default, skip_serializing_if = "Option::is_none")]
+        visible: Option<bool>,
+        #[serde(rename = "zOrder")]
+        z_order: i64,
+    },
+    #[serde(rename = "line")]
+    Line {
+        #[serde(
+            rename = "constraints",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        constraints: Option<ConstraintsDto>,
+        #[serde(rename = "groupId", default, skip_serializing_if = "Option::is_none")]
+        group_id: Option<String>,
+        #[serde(rename = "id")]
+        id: String,
+        #[serde(rename = "locked", default, skip_serializing_if = "Option::is_none")]
+        locked: Option<bool>,
+        #[serde(rename = "strokeWidth")]
+        stroke_width: i64,
+        #[serde(rename = "transform")]
+        transform: TransformDto,
+        #[serde(rename = "visible", default, skip_serializing_if = "Option::is_none")]
+        visible: Option<bool>,
+        #[serde(rename = "zOrder")]
+        z_order: i64,
+    },
+    #[serde(rename = "rectangle")]
+    Rectangle {
+        #[serde(
+            rename = "constraints",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        constraints: Option<ConstraintsDto>,
+        #[serde(rename = "fill", default, skip_serializing_if = "Option::is_none")]
+        fill: Option<bool>,
+        #[serde(rename = "groupId", default, skip_serializing_if = "Option::is_none")]
+        group_id: Option<String>,
+        #[serde(rename = "id")]
+        id: String,
+        #[serde(rename = "locked", default, skip_serializing_if = "Option::is_none")]
+        locked: Option<bool>,
+        #[serde(rename = "strokeWidth")]
+        stroke_width: i64,
+        #[serde(rename = "transform")]
+        transform: TransformDto,
+        #[serde(rename = "visible", default, skip_serializing_if = "Option::is_none")]
+        visible: Option<bool>,
+        #[serde(rename = "zOrder")]
+        z_order: i64,
+    },
+    #[serde(rename = "ellipse")]
+    Ellipse {
+        #[serde(
+            rename = "constraints",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        constraints: Option<ConstraintsDto>,
+        #[serde(rename = "fill", default, skip_serializing_if = "Option::is_none")]
+        fill: Option<bool>,
+        #[serde(rename = "groupId", default, skip_serializing_if = "Option::is_none")]
+        group_id: Option<String>,
+        #[serde(rename = "id")]
+        id: String,
+        #[serde(rename = "locked", default, skip_serializing_if = "Option::is_none")]
+        locked: Option<bool>,
+        #[serde(rename = "strokeWidth")]
+        stroke_width: i64,
+        #[serde(rename = "transform")]
+        transform: TransformDto,
+        #[serde(rename = "visible", default, skip_serializing_if = "Option::is_none")]
+        visible: Option<bool>,
+        #[serde(rename = "zOrder")]
+        z_order: i64,
+    },
+    #[serde(rename = "triangle")]
+    Triangle {
+        #[serde(
+            rename = "constraints",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        constraints: Option<ConstraintsDto>,
+        #[serde(rename = "fill", default, skip_serializing_if = "Option::is_none")]
+        fill: Option<bool>,
+        #[serde(rename = "groupId", default, skip_serializing_if = "Option::is_none")]
+        group_id: Option<String>,
+        #[serde(rename = "id")]
+        id: String,
+        #[serde(rename = "locked", default, skip_serializing_if = "Option::is_none")]
+        locked: Option<bool>,
+        #[serde(rename = "strokeWidth")]
+        stroke_width: i64,
+        #[serde(rename = "transform")]
+        transform: TransformDto,
+        #[serde(rename = "visible", default, skip_serializing_if = "Option::is_none")]
+        visible: Option<bool>,
+        #[serde(rename = "zOrder")]
+        z_order: i64,
+    },
+    #[serde(rename = "barcode")]
+    Barcode {
+        #[serde(
+            rename = "constraints",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        constraints: Option<ConstraintsDto>,
+        #[serde(rename = "data")]
+        data: String,
+        #[serde(rename = "groupId", default, skip_serializing_if = "Option::is_none")]
+        group_id: Option<String>,
+        #[serde(
+            rename = "humanReadable",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        human_readable: Option<bool>,
+        #[serde(rename = "id")]
+        id: String,
+        #[serde(rename = "locked", default, skip_serializing_if = "Option::is_none")]
+        locked: Option<bool>,
+        #[serde(rename = "symbology")]
+        symbology: serde_json::Value,
+        #[serde(rename = "transform")]
+        transform: TransformDto,
+        #[serde(rename = "visible", default, skip_serializing_if = "Option::is_none")]
+        visible: Option<bool>,
+        #[serde(rename = "zOrder")]
+        z_order: i64,
+    },
+    #[serde(rename = "qr-code")]
+    QrCode {
+        #[serde(
+            rename = "constraints",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        constraints: Option<ConstraintsDto>,
+        #[serde(rename = "data")]
+        data: String,
+        #[serde(rename = "errorCorrection")]
+        error_correction: serde_json::Value,
+        #[serde(rename = "groupId", default, skip_serializing_if = "Option::is_none")]
+        group_id: Option<String>,
+        #[serde(rename = "id")]
+        id: String,
+        #[serde(rename = "locked", default, skip_serializing_if = "Option::is_none")]
+        locked: Option<bool>,
+        #[serde(rename = "transform")]
+        transform: TransformDto,
+        #[serde(rename = "visible", default, skip_serializing_if = "Option::is_none")]
+        visible: Option<bool>,
+        #[serde(rename = "zOrder")]
+        z_order: i64,
+    },
+    #[serde(rename = "group")]
+    Group {
+        #[serde(rename = "children")]
+        children: Vec<String>,
+        #[serde(
+            rename = "constraints",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        constraints: Option<ConstraintsDto>,
+        #[serde(rename = "groupId", default, skip_serializing_if = "Option::is_none")]
+        group_id: Option<String>,
+        #[serde(rename = "id")]
+        id: String,
+        #[serde(rename = "locked", default, skip_serializing_if = "Option::is_none")]
+        locked: Option<bool>,
+        #[serde(rename = "transform")]
+        transform: TransformDto,
+        #[serde(rename = "visible", default, skip_serializing_if = "Option::is_none")]
+        visible: Option<bool>,
+        #[serde(rename = "zOrder")]
+        z_order: i64,
+    },
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MbLabelV4Dto {
+    #[serde(rename = "coordinateSystem")]
+    pub coordinate_system: CoordinatesDto,
+    #[serde(rename = "elements")]
+    pub elements: Vec<SchemaElementDto>,
+    #[serde(
+        rename = "extensions",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub extensions: Option<serde_json::Value>,
+    #[serde(rename = "fields", default, skip_serializing_if = "Option::is_none")]
+    pub fields: Option<Vec<serde_json::Value>>,
+    #[serde(rename = "media")]
+    pub media: MediaDto,
+    #[serde(rename = "name")]
+    pub name: String,
+    #[serde(rename = "resources", default, skip_serializing_if = "Option::is_none")]
+    pub resources: Option<Vec<ResourceDto>>,
+    #[serde(rename = "version")]
+    pub version: serde_json::Value,
+}

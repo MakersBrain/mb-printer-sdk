@@ -216,9 +216,10 @@ impl ReplayGuard {
     }
 }
 fn write<T: Transport>(t: &mut T, b: &[u8], p: &mut Progress) -> Result<(), ExecuteError> {
+    // Once the transport call begins, the printer may have accepted any prefix even if it errors.
+    p.potentially_accepted_write = true;
     t.write(b).map_err(|message| fail(p, message))?;
     p.bytes_written += b.len() as u64;
-    p.potentially_accepted_write = true;
     Ok(())
 }
 fn fail(p: &Progress, message: String) -> ExecuteError {
@@ -231,7 +232,7 @@ fn validate(v: ResponseValidation, b: &[u8], p: &Progress) -> Result<(), Execute
     match v {
         ResponseValidation::AnyNotification if !b.is_empty() => Ok(()),
         ResponseValidation::BrotherStatus32
-            if b.len() >= 32 && b.starts_with(&[0x80, 0x20, 0x42]) =>
+            if b.len() == 32 && b.starts_with(&[0x80, 0x20, 0x42]) =>
         {
             Ok(())
         }

@@ -90,5 +90,8 @@ fn captured_brother_status_decodes() {
         (62, 29, "die-cut")
     );
     assert!(s.errors.is_empty());
-    assert!(protocol::brother_parse_status(&[0; 32]).is_err())
+    assert!(protocol::brother_parse_status(&[0; 32]).is_err());
+    let mut trailing = b.to_vec();
+    trailing.push(0);
+    assert!(protocol::brother_parse_status(&trailing).is_err());
 }

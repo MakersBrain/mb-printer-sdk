@@ -481,8 +481,8 @@ pub struct BrotherStatus {
     pub errors: Vec<&'static str>,
 }
 pub fn brother_parse_status(data: &[u8]) -> Result<BrotherStatus, &'static str> {
-    if data.len() < 32 {
-        return Err("short Brother status");
+    if data.len() != 32 {
+        return Err("Brother status must be exactly 32 bytes");
     }
     if !data.starts_with(&[0x80, 0x20, 0x42]) {
         return Err("unexpected Brother status header");

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Generate language-neutral and TypeScript conformance projections from v4 JSON Schema."""
 from __future__ import annotations
-import argparse, json
+import argparse, json, subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,6 +25,14 @@ def build() -> tuple[str, str, str]:
                 properties.update(inherited["properties"]); required.update(inherited["required"])
             properties.update(part.get("properties", {})); required.update(part.get("required", []))
         return {"properties": sorted(properties), "required": sorted(required)}
+    def effective_node(name: str) -> dict[str, object]:
+        properties: dict[str, object] = {}; required: set[str] = set()
+        for part in [defs[name], *defs[name].get("allOf", [])]:
+            if "$ref" in part:
+                inherited = effective_node(part["$ref"].rsplit("/", 1)[1])
+                properties.update(inherited["properties"]); required.update(inherited["required"])
+            properties.update(part.get("properties", {})); required.update(part.get("required", []))
+        return {"properties": properties, "required": required}
     definitions = [item["$ref"].rsplit("/", 1)[1] for item in defs["element"]["oneOf"]]
     elements = [(name, next(part["properties"]["type"]["const"] for part in defs[name]["allOf"] if "properties" in part)) for name in definitions]
     projection = {
@@ -76,6 +84,49 @@ def build() -> tuple[str, str, str]:
     rust += "pub const ELEMENT_DISCRIMINATORS: &[&str] = &[\n"
     rust += "".join(f"    {json.dumps(value)},\n" for _, value in elements)
     rust += "];\n"
+    def rust_name(value: str) -> str: return "".join(part.title() for part in value.replace("-", "_").split("_"))
+    def rust_field(value: str) -> str:
+        return "".join(("_" + char.lower()) if char.isupper() else char for char in value).replace("-", "_")
+    def rust_type(node: dict[str, object]) -> str:
+        if "$ref" in node:
+            name = str(node["$ref"]).rsplit("/", 1)[1]
+            return "SchemaElementDto" if name == "element" else rust_name(name) + "Dto"
+        alternatives = node.get("anyOf")
+        if isinstance(alternatives, list):
+            real = [item for item in alternatives if item.get("type") != "null"]
+            return rust_type(real[0]) if len(real) == 1 else "serde_json::Value"
+        kind = node.get("type")
+        if isinstance(kind, list):
+            real = [item for item in kind if item != "null"]
+            return rust_type({**node, "type": real[0]}) if len(real) == 1 else "serde_json::Value"
+        if kind == "string": return "String"
+        if kind == "integer": return "i64"
+        if kind == "number": return "f64"
+        if kind == "boolean": return "bool"
+        if kind == "array": return f"Vec<{rust_type(node.get('items', {}))}>"
+        return "serde_json::Value"
+    def rust_fields(properties: dict[str, object], required: set[str], skip_type: bool = False, public: bool = True) -> str:
+        lines = []
+        for prop, node in sorted(properties.items()):
+            if skip_type and prop == "type": continue
+            optional = prop not in required; ty = rust_type(node); ty = f"Option<{ty}>" if optional else ty
+            annotation = f"        #[serde(rename = {json.dumps(prop)}"
+            annotation += ", default, skip_serializing_if = \"Option::is_none\")]" if optional else ")]"
+            lines.extend([annotation, f"        {'pub ' if public else ''}{rust_field(prop)}: {ty},"])
+        return "\n".join(lines)
+    for name in ["bounds", "media", "coordinates", "resource", "transform", "constraints", "common"]:
+        node = effective_node(name)
+        rust += f"#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]\n#[serde(deny_unknown_fields)]\npub struct {rust_name(name)}Dto {{\n{rust_fields(node['properties'], node['required'])}\n}}\n"
+    rust += "#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]\n#[serde(tag = \"type\")]\npub enum SchemaElementDto {\n"
+    for name, discriminator in elements:
+        node = effective_node(name)
+        rust += f"    #[serde(rename = {json.dumps(discriminator)})]\n    {rust_name(discriminator)} {{\n{rust_fields(node['properties'], node['required'], True, False)}\n    }},\n"
+    rust += "}\n"
+    rust += f"#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]\n#[serde(deny_unknown_fields)]\npub struct MbLabelV4Dto {{\n{rust_fields(schema['properties'], set(schema['required']))}\n}}\n"
+    rust = subprocess.run(
+        ["rustfmt", "--edition", "2024"], input=rust, text=True,
+        stdout=subprocess.PIPE, check=True,
+    ).stdout
     return encoded, ts, rust
 
 def main() -> None:
