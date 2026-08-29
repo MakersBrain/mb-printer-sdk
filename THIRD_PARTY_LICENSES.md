@@ -16,6 +16,7 @@ AGPL-3.0-or-later.
 | allocator-api2 | 0.2.21 | MIT OR Apache-2.0 | https://github.com/zakarumych/allocator-api2 |
 | arrayref | 0.3.9 | BSD-2-Clause | https://github.com/droundy/arrayref |
 | arrayvec | 0.7.8 | MIT OR Apache-2.0 | https://github.com/bluss/arrayvec |
+| async-trait | 0.1.92 | MIT OR Apache-2.0 | https://github.com/dtolnay/async-trait |
 | autocfg | 1.5.1 | Apache-2.0 OR MIT | https://github.com/cuviper/autocfg |
 | barcoders | 2.0.0 | MIT OR Apache-2.0 | https://github.com/buntine/barcoders |
 | base64 | 0.22.1 | MIT OR Apache-2.0 | https://github.com/marshallpierce/rust-base64 |
@@ -24,22 +25,38 @@ AGPL-3.0-or-later.
 | bitflags | 1.3.2 | MIT/Apache-2.0 | https://github.com/bitflags/bitflags |
 | bitflags | 2.13.1 | MIT OR Apache-2.0 | https://github.com/bitflags/bitflags |
 | block-buffer | 0.10.4 | MIT OR Apache-2.0 | https://github.com/RustCrypto/utils |
+| block2 | 0.5.1 | MIT | https://github.com/madsmtm/objc2 |
+| bluez-async | 0.8.2 | MIT OR Apache-2.0 | https://github.com/bluez-rs/bluez-async/ |
+| bluez-generated | 0.4.0 | MIT OR Apache-2.0 | https://github.com/bluez-rs/bluez-async/ |
 | borrow-or-share | 0.2.4 | MIT-0 | https://github.com/yescallop/borrow-or-share |
+| btleplug | 0.11.8 | MIT/Apache-2.0/BSD-3-Clause | https://github.com/deviceplug/btleplug |
 | bumpalo | 3.20.3 | MIT OR Apache-2.0 | https://github.com/fitzgen/bumpalo |
 | bytecount | 0.6.9 | Apache-2.0/MIT | https://github.com/llogiq/bytecount |
 | bytemuck | 1.25.2 | Zlib OR Apache-2.0 OR MIT | https://github.com/Lokathor/bytemuck |
 | bytemuck_derive | 1.12.0 | Zlib OR Apache-2.0 OR MIT | https://github.com/Lokathor/bytemuck |
 | byteorder-lite | 0.1.0 | Unlicense OR MIT | https://github.com/image-rs/byteorder-lite |
+| bytes | 1.12.1 | MIT | https://github.com/tokio-rs/bytes |
+| cc | 1.4.4 | MIT OR Apache-2.0 | https://github.com/rust-lang/cc-rs |
+| cesu8 | 1.1.0 | Apache-2.0/MIT | https://github.com/emk/cesu8-rs |
 | cfg-if | 1.0.4 | MIT OR Apache-2.0 | https://github.com/rust-lang/cfg-if |
 | color | 0.3.3 | Apache-2.0 OR MIT | https://github.com/linebender/color |
 | color_quant | 1.1.0 | MIT | https://github.com/image-rs/color_quant.git |
+| combine | 4.6.8 | MIT | https://github.com/Marwes/combine |
+| core-foundation | 0.10.1 | MIT OR Apache-2.0 | https://github.com/servo/core-foundation-rs |
+| core-foundation-sys | 0.8.7 | MIT OR Apache-2.0 | https://github.com/servo/core-foundation-rs |
 | core_maths | 0.1.1 | MIT | https://github.com/robertbastian/core_maths |
 | cpufeatures | 0.2.17 | MIT OR Apache-2.0 | https://github.com/RustCrypto/utils |
 | crc32fast | 1.5.1 | MIT OR Apache-2.0 | https://github.com/srijs/rust-crc32fast |
+| crossbeam-utils | 0.8.22 | MIT OR Apache-2.0 | https://github.com/crossbeam-rs/crossbeam |
 | crypto-common | 0.1.7 | MIT OR Apache-2.0 | https://github.com/RustCrypto/traits |
+| dashmap | 5.5.3 | MIT | https://github.com/xacrimon/dashmap |
+| dashmap | 6.2.1 | MIT | https://github.com/xacrimon/dashmap |
 | data-url | 0.3.2 | MIT OR Apache-2.0 | https://github.com/servo/rust-url |
+| dbus | 0.9.12 | Apache-2.0/MIT | https://github.com/diwic/dbus-rs |
+| dbus-tokio | 0.7.6 | Apache-2.0/MIT | https://github.com/diwic/dbus-rs |
 | digest | 0.10.7 | MIT OR Apache-2.0 | https://github.com/RustCrypto/traits |
 | displaydoc | 0.2.7 | MIT OR Apache-2.0 | https://github.com/yaahc/displaydoc |
+| either | 1.18.0 | MIT OR Apache-2.0 | https://github.com/rayon-rs/either |
 | email_address | 0.2.9 | MIT | https://github.com/johnstonskj/rust-email_address.git |
 | equivalent | 1.0.2 | Apache-2.0 OR MIT | https://github.com/indexmap-rs/equivalent |
 | euclid | 0.22.14 | MIT OR Apache-2.0 | https://github.com/servo/euclid |
@@ -47,6 +64,7 @@ AGPL-3.0-or-later.
 | fastrand | 2.5.0 | Apache-2.0 OR MIT | https://github.com/smol-rs/fastrand |
 | fdeflate | 0.3.7 | MIT OR Apache-2.0 | https://github.com/image-rs/fdeflate |
 | fearless_simd | 0.4.1 | Apache-2.0 OR MIT | https://github.com/linebender/fearless_simd |
+| find-msvc-tools | 0.1.11 | MIT OR Apache-2.0 | https://github.com/rust-lang/cc-rs |
 | flate2 | 1.1.10 | MIT OR Apache-2.0 | https://github.com/rust-lang/flate2-rs |
 | float-cmp | 0.9.0 | MIT | https://github.com/mikedilger/float-cmp |
 | fluent-uri | 0.3.2 | MIT | https://github.com/yescallop/fluent-uri-rs |
@@ -56,7 +74,13 @@ AGPL-3.0-or-later.
 | font8x8 | 0.3.1 | MIT | https://gitlab.com/saibatizoku/font8x8-rs |
 | fontdue | 0.9.4 | MIT OR Apache-2.0 OR Zlib | https://github.com/mooman219/fontdue |
 | fraction | 0.15.4 | MIT OR Apache-2.0 | https://github.com/dnsl48/fraction.git |
+| futures | 0.3.34 | MIT OR Apache-2.0 | https://github.com/rust-lang/futures-rs |
+| futures-channel | 0.3.34 | MIT OR Apache-2.0 | https://github.com/rust-lang/futures-rs |
 | futures-core | 0.3.34 | MIT OR Apache-2.0 | https://github.com/rust-lang/futures-rs |
+| futures-executor | 0.3.34 | MIT OR Apache-2.0 | https://github.com/rust-lang/futures-rs |
+| futures-io | 0.3.34 | MIT OR Apache-2.0 | https://github.com/rust-lang/futures-rs |
+| futures-macro | 0.3.34 | MIT OR Apache-2.0 | https://github.com/rust-lang/futures-rs |
+| futures-sink | 0.3.34 | MIT OR Apache-2.0 | https://github.com/rust-lang/futures-rs |
 | futures-task | 0.3.34 | MIT OR Apache-2.0 | https://github.com/rust-lang/futures-rs |
 | futures-util | 0.3.34 | MIT OR Apache-2.0 | https://github.com/rust-lang/futures-rs |
 | generic-array | 0.14.7 | MIT | https://github.com/fizyk20/generic-array.git |
@@ -64,6 +88,7 @@ AGPL-3.0-or-later.
 | gif | 0.13.3 | MIT OR Apache-2.0 | https://github.com/image-rs/image-gif |
 | glifo | 0.1.1 | Apache-2.0 OR MIT | https://github.com/linebender/vello |
 | guillotiere | 0.7.0 | MIT/Apache-2.0 | https://github.com/nical/guillotiere |
+| hashbrown | 0.14.5 | MIT OR Apache-2.0 | https://github.com/rust-lang/hashbrown |
 | hashbrown | 0.15.5 | MIT OR Apache-2.0 | https://github.com/rust-lang/hashbrown |
 | hashbrown | 0.17.1 | MIT OR Apache-2.0 | https://github.com/rust-lang/hashbrown |
 | hayro | 0.7.1 | Apache-2.0 OR MIT | https://github.com/LaurenzV/hayro |
@@ -86,22 +111,34 @@ AGPL-3.0-or-later.
 | image | 0.25.10 | MIT OR Apache-2.0 | https://github.com/image-rs/image |
 | image-webp | 0.2.4 | MIT OR Apache-2.0 | https://github.com/image-rs/image-webp |
 | imagesize | 0.13.0 | MIT | https://github.com/Roughsketch/imagesize |
+| io-kit-sys | 0.4.1 | MIT / Apache-2.0 | https://github.com/jtakakura/io-kit-rs |
+| itertools | 0.14.0 | MIT OR Apache-2.0 | https://github.com/rust-itertools/itertools |
 | itoa | 1.0.18 | MIT OR Apache-2.0 | https://github.com/dtolnay/itoa |
+| jni | 0.19.0 | MIT/Apache-2.0 | https://github.com/jni-rs/jni-rs |
+| jni-sys | 0.3.1 | MIT OR Apache-2.0 | https://github.com/jni-rs/jni-sys |
+| jni-sys | 0.4.1 | MIT OR Apache-2.0 | https://github.com/jni-rs/jni-sys |
+| jni-sys-macros | 0.4.1 | MIT OR Apache-2.0 | https://github.com/jni-rs/jni-sys |
+| jni-utils | 0.1.1 | BSD-3-Clause | https://github.com/deviceplug/jni-utils-rs |
 | js-sys | 0.3.104 | MIT OR Apache-2.0 | https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/js-sys |
 | jsonschema | 0.33.0 | MIT | https://github.com/Stranger6667/jsonschema |
 | kurbo | 0.11.3 | Apache-2.0 OR MIT | https://github.com/linebender/kurbo |
 | kurbo | 0.13.1 | Apache-2.0 OR MIT | https://github.com/linebender/kurbo |
 | lazy_static | 1.5.0 | MIT OR Apache-2.0 | https://github.com/rust-lang-nursery/lazy-static.rs |
 | libc | 0.2.189 | MIT OR Apache-2.0 | https://github.com/rust-lang/libc |
+| libdbus-sys | 0.2.7 | Apache-2.0/MIT | https://github.com/diwic/dbus-rs |
 | libm | 0.2.16 | MIT | https://github.com/rust-lang/compiler-builtins |
+| libusb1-sys | 0.7.0 | MIT | https://github.com/a1ien/rusb.git |
 | linebender_resource_handle | 0.1.1 | Apache-2.0 OR MIT | https://github.com/linebender/raw_resource_handle |
 | litemap | 0.8.3 | Unicode-3.0 | https://github.com/unicode-org/icu4x |
 | lock_api | 0.4.14 | MIT OR Apache-2.0 | https://github.com/Amanieu/parking_lot |
 | log | 0.4.34 | MIT OR Apache-2.0 | https://github.com/rust-lang/log |
+| mach2 | 0.4.3 | BSD-2-Clause OR MIT OR Apache-2.0 | https://github.com/JohnTitor/mach2 |
 | memchr | 2.8.3 | Unlicense OR MIT | https://github.com/BurntSushi/memchr |
 | miniz_oxide | 0.8.9 | MIT OR Zlib OR Apache-2.0 | https://github.com/Frommi/miniz_oxide/tree/master/miniz_oxide |
 | miniz_oxide | 0.9.1 | MIT OR Zlib OR Apache-2.0 | https://github.com/Frommi/miniz_oxide/tree/master/miniz_oxide |
+| mio | 1.2.2 | MIT | https://github.com/tokio-rs/mio |
 | moxcms | 0.8.1 | BSD-3-Clause OR Apache-2.0 | https://github.com/awxkee/moxcms.git |
+| nix | 0.26.4 | MIT | https://github.com/nix-rust/nix |
 | num | 0.4.3 | MIT OR Apache-2.0 | https://github.com/rust-num/num |
 | num-bigint | 0.4.8 | MIT OR Apache-2.0 | https://github.com/rust-num/num-bigint |
 | num-cmp | 0.1.0 | MIT/Apache-2.0 | https://github.com/lifthrasiir/num-cmp |
@@ -110,6 +147,11 @@ AGPL-3.0-or-later.
 | num-iter | 0.1.46 | MIT OR Apache-2.0 | https://github.com/rust-num/num-iter |
 | num-rational | 0.4.2 | MIT OR Apache-2.0 | https://github.com/rust-num/num-rational |
 | num-traits | 0.2.19 | MIT OR Apache-2.0 | https://github.com/rust-num/num-traits |
+| objc-sys | 0.3.5 | MIT | https://github.com/madsmtm/objc2 |
+| objc2 | 0.5.2 | MIT | https://github.com/madsmtm/objc2 |
+| objc2-core-bluetooth | 0.2.2 | MIT | https://github.com/madsmtm/objc2 |
+| objc2-encode | 4.1.0 | MIT | https://github.com/madsmtm/objc2 |
+| objc2-foundation | 0.2.2 | MIT | https://github.com/madsmtm/objc2 |
 | once_cell | 1.21.4 | MIT OR Apache-2.0 | https://github.com/matklad/once_cell |
 | outref | 0.5.2 | MIT | https://github.com/Nugine/outref |
 | parking_lot | 0.12.5 | MIT OR Apache-2.0 | https://github.com/Amanieu/parking_lot |
@@ -123,6 +165,7 @@ AGPL-3.0-or-later.
 | pic-scale | 0.7.11 | BSD-3-Clause OR Apache-2.0 | https://github.com/awxkee/pic-scale |
 | pico-args | 0.5.0 | MIT | https://github.com/RazrFalcon/pico-args |
 | pin-project-lite | 0.2.17 | Apache-2.0 OR MIT | https://github.com/taiki-e/pin-project-lite |
+| pkg-config | 0.3.34 | MIT OR Apache-2.0 | https://github.com/rust-lang/pkg-config-rs |
 | png | 0.17.16 | MIT OR Apache-2.0 | https://github.com/image-rs/image-png |
 | png | 0.18.1 | MIT OR Apache-2.0 | https://github.com/image-rs/image-png |
 | polycool | 0.4.0 | MIT OR Apache-2.0 | https://github.com/linebender/kurbo |
@@ -144,34 +187,47 @@ AGPL-3.0-or-later.
 | resvg | 0.45.1 | Apache-2.0 OR MIT | https://github.com/linebender/resvg |
 | rgb | 0.8.53 | MIT | https://github.com/kornelski/rust-rgb |
 | roxmltree | 0.20.0 | MIT OR Apache-2.0 | https://github.com/RazrFalcon/roxmltree |
+| rusb | 0.9.4 | MIT | https://github.com/a1ien/rusb.git |
 | rustc-hash | 2.1.3 | Apache-2.0 OR MIT | https://github.com/rust-lang/rustc-hash |
 | rustversion | 1.0.23 | MIT OR Apache-2.0 | https://github.com/dtolnay/rustversion |
 | rustybuzz | 0.20.1 | MIT | https://github.com/harfbuzz/rustybuzz |
+| same-file | 1.0.6 | Unlicense/MIT | https://github.com/BurntSushi/same-file |
 | scopeguard | 1.2.0 | MIT OR Apache-2.0 | https://github.com/bluss/scopeguard |
 | serde | 1.0.229 | MIT OR Apache-2.0 | https://github.com/serde-rs/serde |
+| serde-xml-rs | 0.8.2 | MIT | https://github.com/RReverser/serde-xml-rs |
 | serde_core | 1.0.229 | MIT OR Apache-2.0 | https://github.com/serde-rs/serde |
 | serde_derive | 1.0.229 | MIT OR Apache-2.0 | https://github.com/serde-rs/serde |
 | serde_json | 1.0.151 | MIT OR Apache-2.0 | https://github.com/serde-rs/json |
+| serialport | 4.10.0 | MPL-2.0 | https://github.com/serialport/serialport-rs |
 | sha2 | 0.10.9 | MIT OR Apache-2.0 | https://github.com/RustCrypto/hashes |
+| shlex | 2.0.1 | MIT OR Apache-2.0 | https://github.com/comex/rust-shlex |
 | simd-adler32 | 0.3.10 | MIT | https://github.com/mcountryman/simd-adler32 |
 | simplecss | 0.2.2 | Apache-2.0 OR MIT | https://github.com/linebender/simplecss |
 | siphasher | 1.0.3 | MIT/Apache-2.0 | https://github.com/jedisct1/rust-siphash |
 | skrifa | 0.42.1 | MIT OR Apache-2.0 | https://github.com/googlefonts/fontations |
 | slab | 0.4.12 | MIT | https://github.com/tokio-rs/slab |
 | smallvec | 1.15.2 | MIT OR Apache-2.0 | https://github.com/servo/rust-smallvec |
+| socket2 | 0.6.5 | MIT OR Apache-2.0 | https://github.com/rust-lang/socket2 |
 | stable_deref_trait | 1.2.1 | MIT OR Apache-2.0 | https://github.com/storyyeller/stable_deref_trait |
+| static_assertions | 1.1.0 | MIT OR Apache-2.0 | https://github.com/nvzqz/static-assertions-rs |
 | strict-num | 0.1.1 | MIT | https://github.com/RazrFalcon/strict-num |
 | svgtypes | 0.15.3 | Apache-2.0 OR MIT | https://github.com/linebender/svgtypes |
 | syn | 2.0.119 | MIT OR Apache-2.0 | https://github.com/dtolnay/syn |
 | syn | 3.0.4 | MIT OR Apache-2.0 | https://github.com/dtolnay/syn |
 | synstructure | 0.13.2 | MIT | https://github.com/mystor/synstructure |
+| thiserror | 1.0.69 | MIT OR Apache-2.0 | https://github.com/dtolnay/thiserror |
 | thiserror | 2.0.20 | MIT OR Apache-2.0 | https://github.com/dtolnay/thiserror |
+| thiserror-impl | 1.0.69 | MIT OR Apache-2.0 | https://github.com/dtolnay/thiserror |
 | thiserror-impl | 2.0.20 | MIT OR Apache-2.0 | https://github.com/dtolnay/thiserror |
 | tiny-skia | 0.11.4 | BSD-3-Clause | https://github.com/RazrFalcon/tiny-skia |
 | tiny-skia-path | 0.11.4 | BSD-3-Clause | https://github.com/RazrFalcon/tiny-skia/tree/master/path |
 | tinystr | 0.8.4 | Unicode-3.0 | https://github.com/unicode-org/icu4x |
+| tokio | 1.53.1 | MIT | https://github.com/tokio-rs/tokio |
+| tokio-stream | 0.1.19 | MIT | https://github.com/tokio-rs/tokio |
+| tokio-util | 0.7.19 | MIT | https://github.com/tokio-rs/tokio |
 | ttf-parser | 0.25.1 | MIT OR Apache-2.0 | https://github.com/harfbuzz/ttf-parser |
 | typenum | 1.20.1 | MIT OR Apache-2.0 | https://github.com/paholg/typenum |
+| unescaper | 0.1.10 | MIT OR GPL-3.0-only | https://github.com/hack-ink/unescaper |
 | unicode-bidi-mirroring | 0.4.0 | MIT/Apache-2.0 | https://github.com/RazrFalcon/unicode-bidi-mirroring |
 | unicode-ccc | 0.4.0 | MIT/Apache-2.0 | https://github.com/RazrFalcon/unicode-ccc |
 | unicode-ident | 1.0.24 | (MIT OR Apache-2.0) AND Unicode-3.0 | https://github.com/dtolnay/unicode-ident |
@@ -181,20 +237,47 @@ AGPL-3.0-or-later.
 | utf8_iter | 1.0.4 | Apache-2.0 OR MIT | https://github.com/hsivonen/utf8_iter |
 | uuid | 1.26.0 | Apache-2.0 OR MIT | https://github.com/uuid-rs/uuid |
 | uuid-simd | 0.8.0 | MIT | https://github.com/Nugine/simd |
+| vcpkg | 0.2.15 | MIT/Apache-2.0 | https://github.com/mcgoo/vcpkg-rs |
 | vello_common | 0.0.8 | Apache-2.0 OR MIT | https://github.com/linebender/vello |
 | vello_common | 0.0.9 | Apache-2.0 OR MIT | https://github.com/linebender/vello |
 | vello_cpu | 0.0.8 | Apache-2.0 OR MIT | https://github.com/linebender/vello |
 | version_check | 0.9.5 | MIT/Apache-2.0 | https://github.com/SergioBenitez/version_check |
 | vsimd | 0.8.0 | MIT | https://github.com/Nugine/simd |
+| walkdir | 2.5.0 | Unlicense/MIT | https://github.com/BurntSushi/walkdir |
+| wasi | 0.11.1+wasi-snapshot-preview1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | https://github.com/bytecodealliance/wasi |
 | wasip2 | 1.0.4+wasi-0.2.12 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | https://github.com/bytecodealliance/wasi-rs |
 | wasm-bindgen | 0.2.127 | MIT OR Apache-2.0 | https://github.com/wasm-bindgen/wasm-bindgen |
 | wasm-bindgen-macro | 0.2.127 | MIT OR Apache-2.0 | https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/macro |
 | wasm-bindgen-macro-support | 0.2.127 | MIT OR Apache-2.0 | https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/macro-support |
 | wasm-bindgen-shared | 0.2.127 | MIT OR Apache-2.0 | https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/shared |
 | weezl | 0.1.12 | MIT OR Apache-2.0 | https://github.com/image-rs/weezl |
+| winapi-util | 0.1.11 | Unlicense OR MIT | https://github.com/BurntSushi/winapi-util |
+| windows | 0.61.3 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs |
+| windows-collections | 0.2.0 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs |
+| windows-core | 0.61.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs |
+| windows-future | 0.2.1 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs |
+| windows-implement | 0.60.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs |
+| windows-interface | 0.59.3 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs |
+| windows-link | 0.1.3 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs |
 | windows-link | 0.2.1 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs |
+| windows-numerics | 0.2.0 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs |
+| windows-result | 0.3.4 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs |
+| windows-strings | 0.4.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs |
+| windows-sys | 0.52.0 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs |
+| windows-sys | 0.61.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs |
+| windows-targets | 0.52.6 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs |
+| windows-threading | 0.1.0 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs |
+| windows_aarch64_gnullvm | 0.52.6 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs |
+| windows_aarch64_msvc | 0.52.6 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs |
+| windows_i686_gnu | 0.52.6 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs |
+| windows_i686_gnullvm | 0.52.6 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs |
+| windows_i686_msvc | 0.52.6 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs |
+| windows_x86_64_gnu | 0.52.6 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs |
+| windows_x86_64_gnullvm | 0.52.6 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs |
+| windows_x86_64_msvc | 0.52.6 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs |
 | wit-bindgen | 0.57.1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | https://github.com/bytecodealliance/wit-bindgen |
 | writeable | 0.6.4 | Unicode-3.0 | https://github.com/unicode-org/icu4x |
+| xml | 1.4.0 | MIT | https://github.com/kornelski/xml-rs |
 | xmlwriter | 0.1.0 | MIT | https://github.com/RazrFalcon/xmlwriter |
 | yoke | 0.8.3 | Unicode-3.0 | https://github.com/unicode-org/icu4x |
 | yoke-derive | 0.8.2 | Unicode-3.0 | https://github.com/unicode-org/icu4x |

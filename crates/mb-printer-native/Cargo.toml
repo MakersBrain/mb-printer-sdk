@@ -15,14 +15,22 @@ keywords = ["thermal-printer", "label", "transport"]
 categories = ["hardware-support"]
 include = ["/src/**", "/tests/**", "/Cargo.toml", "/README.md", "/LICENSE"]
 [features]
-default = ["serial", "usb", "ble", "wifi", "native-input"]
-bluetooth-rfcomm = []
-serial = []
-usb = []
-ble = []
+default = []
+bluetooth-rfcomm = ["dep:libc"]
+serial = ["dep:serialport"]
+usb = ["dep:rusb"]
+ble = ["dep:btleplug", "dep:dbus", "dep:futures-util", "dep:tokio", "dep:uuid"]
 wifi = []
 native-input = []
 [dependencies]
 mb-printer-core = { version = "=0.1.0", path = "../mb-printer-core" }
 thiserror.workspace = true
 sha2.workspace = true
+serialport = { version = "4.8", default-features = false, optional = true }
+rusb = { version = "0.9", features = ["vendored"], optional = true }
+btleplug = { version = "0.11", optional = true }
+dbus = { version = "0.9", features = ["vendored"], optional = true }
+futures-util = { version = "0.3", optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "time"], optional = true }
+uuid = { version = "1", optional = true }
+libc = { version = "0.2", optional = true }

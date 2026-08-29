@@ -1,4 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+#[cfg(any(
+    feature = "serial",
+    feature = "usb",
+    feature = "ble",
+    feature = "wifi",
+    feature = "native-input"
+))]
 use mb_printer_native::{Transport, WaitOutcome, transports::*};
 
 #[cfg(feature = "serial")]
@@ -46,6 +53,31 @@ fn usb_backend_preserves_writes_and_timeout() {
     transport.write(&[1, 2]).unwrap();
     assert_eq!(transport.backend().writes, vec![vec![1, 2]]);
     assert_eq!(transport.wait_response(5).unwrap(), WaitOutcome::Timeout);
+}
+
+#[cfg(feature = "usb")]
+#[test]
+fn rusb_discovery_never_uses_panicking_global_context() {
+    let result = std::panic::catch_unwind(usb::discover_rusb);
+    assert!(
+        result.is_ok(),
+        "USB discovery must return Result instead of panicking"
+    );
+}
+
+#[cfg(feature = "serial")]
+#[test]
+fn serial_configuration_has_explicit_printer_defaults() {
+    let config = serial::SerialConfig::default();
+    assert_eq!(
+        (
+            config.baud_rate,
+            config.timeout_ms,
+            config.payload_limit,
+            config.response_limit
+        ),
+        (115_200, 500, 512, 64)
+    );
 }
 
 #[cfg(feature = "ble")]
@@ -103,6 +135,37 @@ fn wifi_credentials_never_debug_the_secret() {
     let debug = format!("{value:?}");
     assert!(debug.contains("label-net"));
     assert!(!debug.contains("secret"));
+}
+
+#[cfg(feature = "wifi")]
+#[test]
+fn brother_wifi_commands_and_parsers_match_reference_contract() {
+    let settings = wifi::WirelessSettings {
+        ssid: "Café".into(),
+        password: "secret".into(),
+        encryption: "tkip-aes".into(),
+        authentication: "wpa-psk".into(),
+        infrastructure: true,
+        wireless_direct: false,
+        reboot: false,
+    };
+    let command = settings.command().unwrap();
+    assert!(command.starts_with(wifi::PJL_HEADER));
+    let encoded_ssid = b"458877:-43-61-66-c3";
+    assert!(
+        command
+            .windows(encoded_ssid.len())
+            .any(|part| part == encoded_ssid)
+    );
+    assert!(!command.windows(6).any(|part| part == b"secret"));
+    assert_eq!(wifi::parse_wifi_status(b"\"458867 : 1\r\n"), Some(true));
+    assert_eq!(
+        wifi::parse_ip_address(b"458967.2:-c0-a8-01-2a\r\n"),
+        Some("192.168.1.42".into())
+    );
+    let points = wifi::parse_access_points(b"VAP,\"-43-61-66-c3-a9\",x,x,6,-42,3,2\r\n");
+    assert_eq!(points[0].ssid, "Café");
+    assert!(points[0].enterprise && points[0].encrypted);
 }
 
 #[cfg(feature = "native-input")]

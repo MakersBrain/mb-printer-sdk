@@ -9,7 +9,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 metadata = json.loads(subprocess.check_output(
-    ["cargo", "metadata", "--locked", "--format-version", "1"], cwd=ROOT, text=True
+    ["cargo", "metadata", "--locked", "--all-features", "--format-version", "1"], cwd=ROOT, text=True
 ))
 workspace = set(metadata["workspace_members"])
 rust = sorted(

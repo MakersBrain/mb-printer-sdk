@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-#![forbid(unsafe_code)]
+#![deny(unsafe_op_in_unsafe_fn)]
 pub mod transports;
 use mb_printer_core::protocol::{Action, Plan, ResponseValidation};
 use sha2::{Digest, Sha256};

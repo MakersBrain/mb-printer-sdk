@@ -16,8 +16,8 @@ jobs:
           components: rustfmt, clippy
       - run: cargo fmt --all --check
       - run: python3 scripts/generate_schema_projection.py --check
-      - run: cargo test --workspace --locked
-      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --all-features --locked
+      - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - run: cargo build -p mb-printer-wasm --target wasm32-unknown-unknown --release --locked
       - name: Build publishable crate archives in registry order
         run: |
