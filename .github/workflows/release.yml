@@ -49,7 +49,11 @@ jobs:
       - id: chrome
         uses: browser-actions/setup-chrome@48483d551c22a1fe6154c6a195ccc6d5773dc8c4 # v2
       - run: cargo fmt --all --check && cargo test --workspace --locked && cargo clippy --workspace --all-targets --locked -- -D warnings
-      - run: cargo package --workspace --locked
+      - name: Build publishable crate archives in registry order
+        run: |
+          cargo package -p mb-printer-core --locked
+          cargo package -p mb-printer-native --locked --no-verify
+          cargo package -p mb-printer-wasm --locked --no-verify
       - run: cd target/package/mb-printer-core-$(cat VERSION) && cargo test --locked
       - run: npm ci && npm run build && npm run test:schema && npm run test:wasm-node
         working-directory: crates/mb-printer-wasm

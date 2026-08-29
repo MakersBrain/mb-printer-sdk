@@ -189,6 +189,26 @@ impl MonoRaster {
     pub fn fit_head(&self, head_width: u32, align: Fit) -> Result<Self, RasterError> {
         self.place_on_head(head_width, align, 0, 0)
     }
+    /// Match the legacy/native printer contract, whose head alignment is
+    /// calculated in packed-byte columns before applying dot offsets.
+    pub fn place_on_head_byte_aligned(
+        &self,
+        head_width: u32,
+        align: Fit,
+        offset_x: i32,
+        offset_y: i32,
+    ) -> Result<Self, RasterError> {
+        if head_width == 0 || self.width > head_width {
+            return Err(RasterError::HeadWidth);
+        }
+        let packed_width = self.width.div_ceil(8) * 8;
+        let base = match align {
+            Fit::Left => 0,
+            Fit::Center => ((head_width / 8 - packed_width / 8) / 2) * 8,
+            Fit::Right => head_width - packed_width,
+        };
+        self.place_on_head(head_width, Fit::Left, base as i32 + offset_x, offset_y)
+    }
     pub fn place_on_head(
         &self,
         head_width: u32,

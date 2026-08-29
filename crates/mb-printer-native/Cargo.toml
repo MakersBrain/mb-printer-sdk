@@ -14,6 +14,15 @@ readme = "README.md"
 keywords = ["thermal-printer", "label", "transport"]
 categories = ["hardware-support"]
 include = ["/src/**", "/tests/**", "/Cargo.toml", "/README.md", "/LICENSE"]
+[features]
+default = ["serial", "usb", "ble", "wifi", "native-input"]
+bluetooth-rfcomm = []
+serial = []
+usb = []
+ble = []
+wifi = []
+native-input = []
 [dependencies]
 mb-printer-core = { version = "=0.1.0", path = "../mb-printer-core" }
 thiserror.workspace = true
+sha2.workspace = true

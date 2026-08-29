@@ -3,6 +3,21 @@ use mb_printer_core::{Document, importer};
 use serde_json::json;
 
 #[test]
+fn every_reviewed_v3_manifest_fixture_imports_to_valid_v4() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/v3");
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(root.join("manifest.json")).unwrap())
+            .unwrap();
+    assert!(manifest["review"].as_str().unwrap().contains("no user"));
+    for entry in manifest["fixtures"].as_array().unwrap() {
+        let input = std::fs::read_to_string(root.join(entry["file"].as_str().unwrap())).unwrap();
+        let imported = importer::import_v3(&input).unwrap();
+        let document: Document = serde_json::from_value(imported).unwrap();
+        document.validate().unwrap();
+    }
+}
+
+#[test]
 fn nested_groups_and_resources_match_shared_snapshot() {
     let value = importer::import_v3(include_str!("../fixtures/v3/nested-groups.json")).unwrap();
     let elements = value["elements"].as_array().unwrap();

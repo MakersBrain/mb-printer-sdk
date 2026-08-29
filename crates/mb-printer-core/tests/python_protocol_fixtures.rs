@@ -125,7 +125,7 @@ fn every_plan_matches_executed_python_actions() {
             };
             let head = printer.width_px().unwrap_or(prepared.width);
             prepared = prepared
-                .place_on_head(
+                .place_on_head_byte_aligned(
                     head,
                     alignment,
                     options.offset_x.into(),
@@ -146,7 +146,8 @@ fn every_plan_matches_executed_python_actions() {
                 prepared_fixture["height"].as_u64().unwrap() as u32,
                 prepared_fixture["hex"].as_str().unwrap().to_owned()
             ),
-            "Python placement/rotation divergence for {model}"
+            "Python placement/rotation divergence for {model}/{}",
+            case["profile"].as_str().unwrap_or("legacy")
         );
         let raster = protocol::Raster {
             width_bytes: prepared.width.div_ceil(8) as u16,
@@ -157,7 +158,66 @@ fn every_plan_matches_executed_python_actions() {
         assert_eq!(
             observable(&plan.actions, printer.protocol != Protocol::Brother),
             *case["actions"].as_array().unwrap(),
-            "Python action divergence for {model}"
+            "Python action divergence for {model}/{}",
+            case["profile"].as_str().unwrap_or("legacy")
         );
     }
+}
+
+#[test]
+fn brother_status_wait_is_an_explicit_stricter_rust_policy() {
+    let fixture: Value =
+        serde_json::from_str(include_str!("../fixtures/protocol/python-actions.json")).unwrap();
+    let divergences = fixture["provenance"]["knownDivergences"]
+        .as_array()
+        .unwrap();
+    assert_eq!(divergences.len(), 1);
+    assert!(
+        divergences[0]
+            .as_str()
+            .unwrap()
+            .contains("Rust waits for and validates")
+    );
+    let brother = fixture["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|case| case["protocol"] == "brother")
+        .unwrap();
+    assert!(
+        brother["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|action| action["action"] != "wait")
+    );
+    let printer = capabilities::by_id(brother["model"].as_str().unwrap()).unwrap();
+    let prepared = &brother["preparedRaster"];
+    let raster = protocol::Raster {
+        width_bytes: prepared["widthBytes"].as_u64().unwrap() as u16,
+        height: prepared["height"].as_u64().unwrap() as u32,
+        data: decode_hex(prepared["hex"].as_str().unwrap()),
+    };
+    let options = protocol::Options {
+        brother_media: Some(protocol::BrotherMedia {
+            width_mm: 29,
+            length_mm: 42,
+            continuous: false,
+            feed_margin: 0,
+        }),
+        ..Default::default()
+    };
+    assert!(
+        protocol::plan(&printer, &raster, &options)
+            .unwrap()
+            .actions
+            .iter()
+            .any(|action| matches!(
+                action,
+                protocol::Action::WaitForResponse {
+                    validation: protocol::ResponseValidation::BrotherStatus32,
+                    ..
+                }
+            ))
+    );
 }

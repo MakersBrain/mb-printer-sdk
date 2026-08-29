@@ -198,3 +198,26 @@ fn replay_guard_marks_before_first_transport_effect() {
         "replay rejection precedes transport access"
     );
 }
+
+#[test]
+fn filesystem_replay_claim_survives_store_reopen() {
+    let directory = std::env::temp_dir().join(format!("mb-printer-replay-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&directory);
+    let job = plan(vec![Action::CommandWrite {
+        name: "durable".into(),
+        bytes: vec![1],
+        atomic: true,
+    }]);
+    let mut first = FileReplayStore::new(&directory).unwrap();
+    let mut transport = FakeClockTransport::succeed(23);
+    execute_once_with_store(&mut first, "durable-job", &job, &mut transport).unwrap();
+    drop(first);
+    let mut reopened = FileReplayStore::new(&directory).unwrap();
+    let mut retry = FakeClockTransport::succeed(23);
+    assert!(matches!(
+        execute_once_with_store(&mut reopened, "durable-job", &job, &mut retry),
+        Err(ExecuteError::Replay(_))
+    ));
+    assert!(retry.events.is_empty());
+    std::fs::remove_dir_all(directory).unwrap();
+}

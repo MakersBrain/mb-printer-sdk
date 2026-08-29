@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 use mb_printer_core::Document;
+use mb_printer_core::schema_types_generated::{ELEMENT_DISCRIMINATORS, SchemaElementKind};
 use std::collections::BTreeSet;
 
 #[test]
@@ -24,5 +25,14 @@ fn generated_schema_projection_conforms_to_rust_model() {
     assert_eq!(
         represented, projected,
         "the Rust conformance document must represent every schema discriminator"
+    );
+    let generated = ELEMENT_DISCRIMINATORS
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    assert_eq!(generated, projected.iter().map(String::as_str).collect());
+    assert_eq!(
+        serde_json::to_string(&SchemaElementKind::QrCode).unwrap(),
+        "\"qr-code\""
     );
 }

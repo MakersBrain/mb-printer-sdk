@@ -1,0 +1,9 @@
+{
+  "_license": "SPDX-License-Identifier: AGPL-3.0-or-later",
+  "review": "Synthetic fixtures authored for this AGPL repository; no user, vendor, credential, or proprietary asset data.",
+  "fixtures": [
+    {"file":"text-layout.json","covers":["dimensions","DPI","alignment aliases","rotation","visibility","locking"]},
+    {"file":"resources-codes.json","covers":["PNG","SVG","font","barcode aliases","QR","shapes","resource deduplication"]},
+    {"file":"nested-groups.json","covers":["embedded groups","nested groups","resource membership"]}
+  ]
+}

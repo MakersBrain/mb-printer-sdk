@@ -175,7 +175,9 @@ fn element(e: &Value, z: usize, d: f64, resources: &mut Vec<Value>) -> Result<Va
         }
         "rectangle" | "ellipse" | "triangle" | "line" => {
             o.insert("strokeWidth".into(), json!(125));
-            o.insert("fill".into(), json!(false));
+            if ty != "line" {
+                o.insert("fill".into(), json!(false));
+            }
         }
         "image" => {
             let data = e

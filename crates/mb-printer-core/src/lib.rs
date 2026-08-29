@@ -11,6 +11,7 @@ pub mod protocol;
 pub mod raster;
 pub mod render;
 pub mod resources;
+pub mod schema_types_generated;
 pub mod template;
 
 pub use document::{Document, ValidationError};

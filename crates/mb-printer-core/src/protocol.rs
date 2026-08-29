@@ -575,10 +575,12 @@ fn tspl(s: &str) -> Vec<u8> {
     format!("{s}\r\n").into_bytes()
 }
 fn decimal(v: i16) -> String {
-    if v % 10 == 0 {
-        format!("{}", v / 10)
+    let sign = if v < 0 { "-" } else { "" };
+    let magnitude = v.unsigned_abs();
+    if magnitude.is_multiple_of(10) {
+        format!("{sign}{}", magnitude / 10)
     } else {
-        format!("{}.{:01}", v / 10, (v % 10).abs())
+        format!("{sign}{}.{:01}", magnitude / 10, magnitude % 10)
     }
 }
 fn fmt_mm(c: &str, a: u16, b: Option<u16>) -> String {

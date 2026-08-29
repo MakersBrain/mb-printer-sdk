@@ -1,7 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #![forbid(unsafe_code)]
+pub mod transports;
 use mb_printer_core::protocol::{Action, Plan, ResponseValidation};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
+use std::{
+    fs::OpenOptions,
+    io::Write,
+    path::{Path, PathBuf},
+};
 use thiserror::Error;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,6 +46,8 @@ pub enum ExecuteError {
     },
     #[error("execution key was already attempted: {0}")]
     Replay(String),
+    #[error("replay store failed: {0}")]
+    ReplayStore(String),
     #[error("transport failed after {progress:?}: {message}")]
     Transport { progress: Progress, message: String },
     #[error("response timed out after {progress:?}")]
@@ -132,6 +141,63 @@ pub fn execute<T: Transport>(plan: &Plan, t: &mut T) -> Result<Progress, Execute
 #[derive(Debug, Default)]
 pub struct ReplayGuard {
     attempted: BTreeSet<String>,
+}
+
+pub trait ReplayStore {
+    /// Atomically claims a key. Returns false when another process claimed it first.
+    fn claim(&mut self, key: &str) -> Result<bool, String>;
+}
+#[derive(Debug, Default)]
+pub struct MemoryReplayStore {
+    attempted: BTreeSet<String>,
+}
+impl ReplayStore for MemoryReplayStore {
+    fn claim(&mut self, key: &str) -> Result<bool, String> {
+        Ok(self.attempted.insert(key.to_owned()))
+    }
+}
+/// Cross-process replay store using atomic `create_new` marker files.
+#[derive(Debug, Clone)]
+pub struct FileReplayStore {
+    directory: PathBuf,
+}
+impl FileReplayStore {
+    pub fn new(directory: impl AsRef<Path>) -> Result<Self, String> {
+        std::fs::create_dir_all(directory.as_ref()).map_err(|error| error.to_string())?;
+        Ok(Self {
+            directory: directory.as_ref().to_owned(),
+        })
+    }
+}
+impl ReplayStore for FileReplayStore {
+    fn claim(&mut self, key: &str) -> Result<bool, String> {
+        let digest = format!("{:x}", Sha256::digest(key.as_bytes()));
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(self.directory.join(digest))
+        {
+            Ok(mut file) => {
+                file.write_all(key.as_bytes())
+                    .and_then(|_| file.sync_all())
+                    .map_err(|error| error.to_string())?;
+                Ok(true)
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+}
+pub fn execute_once_with_store<T: Transport, S: ReplayStore>(
+    store: &mut S,
+    key: &str,
+    plan: &Plan,
+    transport: &mut T,
+) -> Result<Progress, ExecuteError> {
+    match store.claim(key).map_err(ExecuteError::ReplayStore)? {
+        true => execute(plan, transport),
+        false => Err(ExecuteError::Replay(key.to_owned())),
+    }
 }
 impl ReplayGuard {
     pub fn execute_once<T: Transport>(

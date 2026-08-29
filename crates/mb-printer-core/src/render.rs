@@ -103,7 +103,7 @@ pub fn render_for_printer(
         Alignment::Right => crate::raster::Fit::Right,
     };
     let fitted = raster
-        .fit_head(head, fit)
+        .place_on_head_byte_aligned(head, fit, 0, 0)
         .map_err(|_| RenderError::TooLarge)?;
     let data = fitted.pack_msb().map_err(|_| RenderError::TooLarge)?;
     Ok(protocol::Raster {
