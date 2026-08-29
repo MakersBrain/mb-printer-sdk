@@ -175,6 +175,29 @@ fn all_python_protocol_delay_fixtures_match() {
         protocol::Action::SubscribeNotifications
     ));
 }
+
+#[test]
+fn m110_density_matches_python_ties_to_even_rounding() {
+    let p = capabilities::by_id("m110").unwrap();
+    let r = protocol::Raster {
+        width_bytes: 48,
+        height: 1,
+        data: vec![0; 48],
+    };
+    let expected = [6, 8, 9, 10, 11, 12, 14, 15];
+    for (density, expected_byte) in (1..=8).zip(expected) {
+        let options = protocol::Options {
+            density,
+            ..Default::default()
+        };
+        let plan = protocol::plan(&p, &r, &options).unwrap();
+        assert!(plan.actions.iter().any(|action| matches!(
+            action,
+            protocol::Action::CommandWrite { name, bytes, .. }
+                if name == "M110 density" && bytes == &[0x1b, 0x4e, 4, expected_byte]
+        )));
+    }
+}
 #[test]
 fn non_tspl_copies_repeat_the_complete_flow() {
     let p = capabilities::by_id("m03").unwrap();

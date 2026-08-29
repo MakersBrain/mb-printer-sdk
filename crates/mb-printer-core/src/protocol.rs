@@ -207,7 +207,9 @@ pub fn plan(printer: &PrinterDefinition, r: &Raster, o: &Options) -> Result<Plan
                     0x1b,
                     0x4e,
                     4,
-                    (5 + round_div(o.density as u16 * 5, 4)) as u8,
+                    // Match Python's round(5 + density * 1.25), including
+                    // ties-to-even at the default density (12.5 -> 12).
+                    [0, 6, 8, 9, 10, 11, 12, 14, 15][o.density as usize],
                 ],
             );
             delay(&mut a, 30);

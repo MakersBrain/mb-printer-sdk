@@ -7,6 +7,7 @@ struct Mock {
     delays: Vec<u64>,
     fail_write: bool,
     response: Option<Vec<u8>>,
+    wait: Option<WaitOutcome>,
 }
 impl Transport for Mock {
     fn payload_limit(&self) -> usize {
@@ -26,6 +27,9 @@ impl Transport for Mock {
         self.delays.push(n)
     }
     fn wait_response(&mut self, _: u64) -> Result<WaitOutcome, String> {
+        if let Some(outcome) = self.wait.take() {
+            return Ok(outcome);
+        }
         Ok(WaitOutcome::Response(
             self.response.take().unwrap_or_else(|| vec![1]),
         ))
@@ -83,6 +87,17 @@ fn brother_status_policy_requires_exactly_32_bytes() {
         ..Default::default()
     };
     assert!(execute(&plan, &mut transport).is_ok());
+
+    // The Python and JavaScript Brother drivers treat an absent preflight
+    // status as optional (notably on raw TCP port 9100).
+    for response in [WaitOutcome::Unavailable, WaitOutcome::Timeout] {
+        let mut transport = Mock {
+            response: None,
+            wait: Some(response),
+            ..Default::default()
+        };
+        assert!(execute(&plan, &mut transport).is_ok());
+    }
 }
 #[test]
 fn raster_is_physically_split_and_paced() {

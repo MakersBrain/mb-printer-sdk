@@ -125,6 +125,16 @@ pub fn execute<T: Transport>(plan: &Plan, t: &mut T) -> Result<Progress, Execute
                     t.delay_monotonic(*fallback_delay_ms);
                     Ok(())
                 }
+                // Brother's reference drivers use the status request as a
+                // best-effort preflight. Raw TCP print servers commonly do
+                // not return it, but still accept the raster job. Validate a
+                // reply when present and otherwise continue, matching the
+                // JavaScript/Python implementations.
+                Ok(WaitOutcome::Unavailable | WaitOutcome::Timeout)
+                    if matches!(validation, ResponseValidation::BrotherStatus32) =>
+                {
+                    Ok(())
+                }
                 Ok(WaitOutcome::Unavailable | WaitOutcome::Timeout) => Err(ExecuteError::Timeout {
                     progress: p.clone(),
                 }),
