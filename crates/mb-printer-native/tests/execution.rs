@@ -8,13 +8,18 @@ struct Mock {
     fail_write: bool,
     response: Option<Vec<u8>>,
     wait: Option<WaitOutcome>,
+    command_limit: Option<usize>,
+    raster_limit: Option<usize>,
 }
 impl Transport for Mock {
     fn payload_limit(&self) -> usize {
-        2
+        self.raster_limit.unwrap_or(2)
     }
     fn subscribe_notifications(&mut self) -> Result<(), String> {
         Ok(())
+    }
+    fn command_limit(&self) -> usize {
+        self.command_limit.unwrap_or_else(|| self.payload_limit())
     }
     fn write(&mut self, b: &[u8]) -> Result<(), String> {
         if self.fail_write {
@@ -133,4 +138,34 @@ fn atomic_preflight_occurs_before_writes() {
         Err(ExecuteError::AtomicTooLarge { .. })
     ));
     assert!(m.writes.is_empty())
+}
+
+#[test]
+fn command_and_raster_limits_are_independent() {
+    let plan = Plan {
+        protocol: mb_printer_core::capabilities::Protocol::Brother,
+        source_commit: String::new(),
+        actions: vec![
+            Action::CommandWrite {
+                name: "invalidate".into(),
+                bytes: vec![0; 200],
+                atomic: true,
+            },
+            Action::RasterWrite {
+                bytes: vec![1; 130],
+                logical_chunk: 1024,
+                delay_after_each_physical_write_ms: 0,
+            },
+        ],
+    };
+    let mut transport = Mock {
+        command_limit: Some(512),
+        raster_limit: Some(64),
+        ..Default::default()
+    };
+    execute(&plan, &mut transport).unwrap();
+    assert_eq!(
+        transport.writes.iter().map(Vec::len).collect::<Vec<_>>(),
+        [200, 64, 64, 2]
+    );
 }

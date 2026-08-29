@@ -19,7 +19,15 @@ pub enum WaitOutcome {
 }
 
 pub trait Transport {
+    /// Maximum physical raster write. This is normally the negotiated MTU or
+    /// USB endpoint packet size.
     fn payload_limit(&self) -> usize;
+    /// Maximum indivisible protocol command. Stream transports normally use
+    /// the payload limit; USB may submit a larger bulk transfer which the host
+    /// controller divides into endpoint packets.
+    fn command_limit(&self) -> usize {
+        self.payload_limit()
+    }
     fn subscribe_notifications(&mut self) -> Result<(), String>;
     fn write(&mut self, bytes: &[u8]) -> Result<(), String>;
     fn delay_monotonic(&mut self, milliseconds: u64);
@@ -57,6 +65,7 @@ pub enum ExecuteError {
 }
 pub fn execute<T: Transport>(plan: &Plan, t: &mut T) -> Result<Progress, ExecuteError> {
     let limit = t.payload_limit();
+    let command_limit = t.command_limit();
     if limit == 0 {
         return Err(ExecuteError::InvalidPlan {
             action: 0,
@@ -69,12 +78,12 @@ pub fn execute<T: Transport>(plan: &Plan, t: &mut T) -> Result<Progress, Execute
             atomic: true,
             ..
         } = a
-            && bytes.len() > limit
+            && bytes.len() > command_limit
         {
             return Err(ExecuteError::AtomicTooLarge {
                 action: i,
                 length: bytes.len(),
-                limit,
+                limit: command_limit,
             });
         }
         if let Action::RasterWrite {
