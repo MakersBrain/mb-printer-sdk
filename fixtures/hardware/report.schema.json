@@ -1,0 +1,22 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema",
+  "$id":"https://makersbrain.github.io/mb-printer-sdk/schema/hardware-acceptance-report-v1.json",
+  "title":"MakersBrain printer hardware acceptance report",
+  "x-spdx-license":"AGPL-3.0-or-later",
+  "type":"object","additionalProperties":false,
+  "required":["schemaVersion","spdxLicense","hardwareClaim","cellId","catalogIds","device","transport","platform","media","job","trace","operator","capturedAt","signature"],
+  "properties":{
+    "schemaVersion":{"const":1},"spdxLicense":{"const":"AGPL-3.0-or-later"},"hardwareClaim":{"const":true},
+    "cellId":{"type":"string","minLength":1},
+    "catalogIds":{"type":"array","minItems":1,"uniqueItems":true,"items":{"type":"string","minLength":1}},
+    "device":{"type":"object","additionalProperties":false,"required":["manufacturer","model","serialNumber","firmwareVersion"],"properties":{"manufacturer":{"type":"string","minLength":1},"model":{"type":"string","minLength":1},"serialNumber":{"type":"string","minLength":1},"firmwareVersion":{"type":"string","minLength":1}}},
+    "transport":{"type":"object","additionalProperties":false,"required":["kind","endpoint","negotiatedPayloadBytes"],"properties":{"kind":{"enum":["ble","usb","ipp","raw-tcp","rfcomm","serial","web-bluetooth","webusb"]},"endpoint":{"type":"string","minLength":1},"negotiatedPayloadBytes":{"type":"integer","minimum":1},"commandPayloadBytes":{"type":"integer","minimum":1}}},
+    "platform":{"type":"object","additionalProperties":false,"required":["os","osVersion","architecture","application","applicationVersion"],"properties":{"os":{"type":"string","minLength":1},"osVersion":{"type":"string","minLength":1},"architecture":{"type":"string","minLength":1},"application":{"type":"string","minLength":1},"applicationVersion":{"type":"string","minLength":1},"browser":{"type":"string","minLength":1},"browserVersion":{"type":"string","minLength":1}}},
+    "media":{"type":"object","additionalProperties":false,"required":["identifier","widthMicrometres","heightMicrometres","continuous","cutMode"],"properties":{"identifier":{"type":"string","minLength":1},"widthMicrometres":{"type":"integer","minimum":1},"heightMicrometres":{"type":"integer","minimum":0},"continuous":{"type":"boolean"},"cutMode":{"type":"string","minLength":1}}},
+    "job":{"type":"object","additionalProperties":false,"required":["copies","density","result","physicalLabelsObserved"],"properties":{"copies":{"type":"integer","minimum":1},"density":{"type":"integer","minimum":1},"result":{"const":"printed-and-inspected"},"physicalLabelsObserved":{"type":"integer","minimum":1},"notes":{"type":"string"}}},
+    "trace":{"type":"object","additionalProperties":false,"required":["artifact","sha256","sdkCommit","cliOrEditorCommit","eventCount"],"properties":{"artifact":{"type":"string","minLength":1},"sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},"sdkCommit":{"type":"string","pattern":"^[0-9a-f]{7,40}$"},"cliOrEditorCommit":{"type":"string","pattern":"^[0-9a-f]{7,40}$"},"eventCount":{"type":"integer","minimum":1}}},
+    "operator":{"type":"object","additionalProperties":false,"required":["name","organization","keyId"],"properties":{"name":{"type":"string","minLength":1},"organization":{"type":"string","minLength":1},"keyId":{"type":"string","minLength":1}}},
+    "capturedAt":{"type":"string","format":"date-time"},
+    "signature":{"type":"object","additionalProperties":false,"required":["algorithm","canonicalization","valueBase64"],"properties":{"algorithm":{"enum":["ed25519"]},"canonicalization":{"const":"RFC8785"},"valueBase64":{"type":"string","minLength":40}}}
+  }
+}

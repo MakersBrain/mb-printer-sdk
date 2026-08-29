@@ -74,6 +74,11 @@ try {
   if (invalidStatus.status !== "outcome-unknown") throw new Error("Brother response validation");
   const absentBrother = {...mock,async waitForResponse(){return {kind:"timeout"}}};
   if ((await adapters.executePlan([{action:"wait-for-response",timeout_ms:1,fallback_delay_ms:0,validation:"brother-status32"}],absentBrother)).status !== "completed") throw new Error("Brother best-effort timeout policy");
+  for (const failed of ["subscribe","write","wait"]) {
+    const disconnected = {payloadLimit:4,calls:[],async subscribeNotifications(){this.calls.push("subscribe");if(failed==="subscribe")throw new Error("disconnect");return true},async write(){this.calls.push("write");if(failed==="write")throw new Error("disconnect")},async waitForResponse(){this.calls.push("wait");if(failed==="wait")throw new Error("disconnect");return {kind:"response",bytes:Uint8Array.of(1)}}};
+    const result = await adapters.executePlan([{action:"subscribe-notifications"},{action:"command-write",name:"x",bytes:[1],atomic:true},{action:"wait-for-response",timeout_ms:1,fallback_delay_ms:0,validation:"any-notification"}],disconnected);
+    if (result.status !== (failed === "subscribe" ? "cancelled-before-send" : "outcome-unknown") || disconnected.calls.at(-1) !== failed) throw new Error(`disconnect boundary ${failed}`);
+  }
   const independentLimits = {...mock,payloadLimit:2,commandPayloadLimit:5,calls:[],async write(value,_signal,kind){this.calls.push([kind,...value])}};
   const independent = await adapters.executePlan([{action:"command-write",name:"atomic",bytes:[1,2,3,4,5],atomic:true},{action:"raster-write",bytes:[6,7,8,9,10],logical_chunk:5,delay_after_each_physical_write_ms:0}],independentLimits);
   if (independent.status !== "completed" || JSON.stringify(independentLimits.calls) !== JSON.stringify([["command",1,2,3,4,5],["raster",6,7],["raster",8,9],["raster",10]])) throw new Error("independent command/raster limits");

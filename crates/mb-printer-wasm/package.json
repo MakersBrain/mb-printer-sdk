@@ -9,7 +9,7 @@
   "bugs": {"url":"https://github.com/MakersBrain/mb-printer-sdk/issues"},
   "keywords": ["thermal-printer", "labels", "wasm", "webusb", "webbluetooth"],
   "engines": {"node":">=20"},
-  "publishConfig": {"access":"public","provenance":true},
+  "publishConfig": {"access":"public","provenance":true,"registry":"https://registry.npmjs.org/"},
   "main": "./pkg/node/mb_printer_wasm.cjs",
   "module": "./pkg/web/mb_printer_wasm.js",
   "types": "./pkg/web/mb_printer_wasm.d.ts",
@@ -19,7 +19,10 @@
     "./node": {"types":"./pkg/node/mb_printer_wasm.d.ts","default":"./pkg/node/mb_printer_wasm.cjs"},
     "./adapters": {"types":"./dist/browser-adapters.d.ts","default":"./dist/browser-adapters.js"},
     "./schema": {"types":"./dist/schema-types.generated.d.ts","default":"./dist/schema-types.generated.js"},
-    "./schema.json": "./dist/mb-label-v4.schema.json"
+    "./schema.json": "./dist/mb-label-v4.schema.json",
+    "./hardware-acceptance/matrix.json": "./dist/hardware-acceptance/matrix.json",
+    "./hardware-acceptance/report.schema.json": "./dist/hardware-acceptance/report.schema.json",
+    "./hardware-acceptance/report-template.json": "./dist/hardware-acceptance/report-template.json"
   },
   "files": ["pkg", "dist", "LICENSE", "README.md"],
   "sideEffects": false,
@@ -28,7 +31,7 @@
     "build": "sh ../../scripts/build_wasm_packages.sh",
     "build:adapters": "tsc --noEmit false --declaration --outDir dist",
     "check:types": "tsc --noEmit",
-    "test:schema": "python3 ../../scripts/generate_schema_projection.py --check && node schema-corpus.mjs",
+    "test:schema": "python3 ../../scripts/generate_schema_projection.py --check && node schema-corpus.mjs && node hardware-acceptance.mjs",
     "test:wasm-node": "sh ../../scripts/test_wasm_node.sh",
     "test:wasm-browser": "sh ../../scripts/test_wasm_browser.sh",
     "prepack": "npm run build"

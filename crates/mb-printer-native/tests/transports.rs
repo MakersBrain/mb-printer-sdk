@@ -69,6 +69,51 @@ fn rusb_discovery_never_uses_panicking_global_context() {
     );
 }
 
+#[cfg(feature = "usb")]
+#[test]
+fn usb_candidate_selection_is_injectable_and_deterministic() {
+    let wanted = usb::UsbIdentity {
+        vendor_id: 0x04f9,
+        product_id: 0x209b,
+        bus: 2,
+        address: 7,
+    };
+    let candidate = |identity, class, interface, alternate, endpoint| usb::UsbBulkCandidate {
+        identity,
+        interface,
+        alternate_setting: alternate,
+        out_endpoint: endpoint,
+        in_endpoint: None,
+        max_packet_size: 64,
+        interface_class: class,
+        manufacturer: None,
+        product: None,
+        serial_number: None,
+    };
+    let other = usb::UsbIdentity {
+        address: 8,
+        ..wanted
+    };
+    let candidates = vec![
+        candidate(wanted, 255, 0, 0, 1),
+        candidate(other, 7, 0, 0, 2),
+        candidate(wanted, 7, 2, 1, 4),
+        candidate(wanted, 7, 1, 0, 3),
+    ];
+    let selected = usb::select_bulk_candidate(&candidates, wanted).unwrap();
+    assert_eq!((selected.interface_class, selected.interface), (7, 1));
+    assert!(
+        usb::select_bulk_candidate(
+            &candidates,
+            usb::UsbIdentity {
+                address: 9,
+                ..wanted
+            }
+        )
+        .is_none()
+    );
+}
+
 #[cfg(feature = "serial")]
 #[test]
 fn serial_configuration_has_explicit_printer_defaults() {
@@ -127,6 +172,115 @@ fn ble_backend_distinguishes_unavailable_timeout_and_notification() {
         WaitOutcome::Response(vec![9])
     );
     assert_eq!(connected.wait_response(1).unwrap(), WaitOutcome::Timeout);
+}
+
+#[cfg(feature = "ble")]
+#[test]
+fn injectable_async_ble_serializes_notifies_and_disconnects() {
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    #[derive(Clone)]
+    struct State {
+        events: Arc<Mutex<Vec<String>>>,
+        in_flight: Arc<AtomicUsize>,
+        maximum_in_flight: Arc<AtomicUsize>,
+    }
+    struct Fake {
+        state: State,
+        reply: Option<Vec<u8>>,
+    }
+    impl ble::AsyncBleGattBackend for Fake {
+        fn subscribe(&mut self) -> Pin<Box<dyn Future<Output = Result<bool, String>> + Send + '_>> {
+            Box::pin(async {
+                self.state.events.lock().unwrap().push("subscribe".into());
+                Ok(true)
+            })
+        }
+        fn write_without_response<'a>(
+            &'a mut self,
+            bytes: &'a [u8],
+        ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>> {
+            Box::pin(async move {
+                let current = self.state.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                self.state
+                    .maximum_in_flight
+                    .fetch_max(current, Ordering::SeqCst);
+                self.state
+                    .events
+                    .lock()
+                    .unwrap()
+                    .push(format!("write:{}", bytes[0]));
+                tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+                self.state.in_flight.fetch_sub(1, Ordering::SeqCst);
+                Ok(())
+            })
+        }
+        fn wait_notification(
+            &mut self,
+            timeout_ms: u64,
+        ) -> Pin<Box<dyn Future<Output = Result<Option<Vec<u8>>, String>> + Send + '_>> {
+            Box::pin(async move {
+                self.state
+                    .events
+                    .lock()
+                    .unwrap()
+                    .push(format!("wait:{timeout_ms}"));
+                Ok(self.reply.take())
+            })
+        }
+        fn disconnect(&mut self) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + '_>> {
+            Box::pin(async {
+                self.state.events.lock().unwrap().push("disconnect".into());
+                Ok(())
+            })
+        }
+    }
+    let state = State {
+        events: Arc::new(Mutex::new(vec![])),
+        in_flight: Arc::new(AtomicUsize::new(0)),
+        maximum_in_flight: Arc::new(AtomicUsize::new(0)),
+    };
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    runtime.block_on(async {
+        let transport = Arc::new(
+            ble::AsyncBleTransport::new(
+                Fake {
+                    state: state.clone(),
+                    reply: Some(vec![9]),
+                },
+                20,
+            )
+            .unwrap(),
+        );
+        assert_eq!(
+            transport.wait_notification(1).await.unwrap(),
+            WaitOutcome::Unavailable
+        );
+        assert!(transport.subscribe_notifications().await.unwrap());
+        let (left, right) =
+            futures_util::future::join(transport.write(&[1]), transport.write(&[2])).await;
+        left.unwrap();
+        right.unwrap();
+        assert_eq!(
+            transport.wait_notification(25).await.unwrap(),
+            WaitOutcome::Response(vec![9])
+        );
+        assert_eq!(
+            transport.wait_notification(25).await.unwrap(),
+            WaitOutcome::Timeout
+        );
+        assert!(transport.write(&[0; 21]).await.is_err());
+        transport.disconnect().await.unwrap();
+    });
+    assert_eq!(state.maximum_in_flight.load(Ordering::SeqCst), 1);
+    let events = state.events.lock().unwrap();
+    assert_eq!(events.first().map(String::as_str), Some("subscribe"));
+    assert_eq!(events.last().map(String::as_str), Some("disconnect"));
 }
 
 #[cfg(feature = "wifi")]
@@ -192,6 +346,85 @@ fn ipp_status_parser_preserves_state_reasons_and_media() {
     assert_eq!(status.reasons, ["media-empty"]);
     assert_eq!(status.media_ready, ["roll_62x29mm"]);
     assert!(wifi::parse_ipp_status(&body[..body.len() - 2]).is_err());
+}
+
+#[cfg(feature = "wifi")]
+#[test]
+fn ipp_query_and_discovery_use_the_reusable_loopback_boundary() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+    fn server() -> (wifi::IppEndpoint, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0; 4096];
+            let header_end = loop {
+                let length = stream.read(&mut buffer).unwrap();
+                request.extend_from_slice(&buffer[..length]);
+                if let Some(split) = request.windows(4).position(|part| part == b"\r\n\r\n") {
+                    break split + 4;
+                }
+            };
+            let headers = String::from_utf8_lossy(&request[..header_end]);
+            let content_length = headers
+                .lines()
+                .find_map(|line| {
+                    line.to_ascii_lowercase()
+                        .strip_prefix("content-length: ")
+                        .and_then(|value| value.parse::<usize>().ok())
+                })
+                .unwrap();
+            while request.len() < header_end + content_length {
+                let length = stream.read(&mut buffer).unwrap();
+                request.extend_from_slice(&buffer[..length]);
+            }
+            assert!(
+                request
+                    .windows(20)
+                    .any(|part| part == b"POST /ipp/print HTTP")
+            );
+            assert!(request.windows(11).any(|part| part == b"media-ready"));
+            let mut body = vec![2, 0, 0, 0, 0, 0, 0, 1, 4];
+            let mut attribute = |tag: u8, name: &str, value: &[u8]| {
+                body.push(tag);
+                body.extend((name.len() as u16).to_be_bytes());
+                body.extend(name.as_bytes());
+                body.extend((value.len() as u16).to_be_bytes());
+                body.extend(value);
+            };
+            attribute(0x23, "printer-state", &3u32.to_be_bytes());
+            attribute(0x44, "media-ready", b"roll_62x29mm");
+            body.push(3);
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )
+            .unwrap();
+            stream.write_all(&body).unwrap();
+        });
+        (
+            wifi::IppEndpoint {
+                host: "127.0.0.1".into(),
+                port,
+                resource: "/ipp/print".into(),
+            },
+            handle,
+        )
+    }
+    let (endpoint, handle) = server();
+    let status = wifi::query_ipp_status(&endpoint, 1_000).unwrap();
+    handle.join().unwrap();
+    assert_eq!(status.printer_state, Some(3));
+    assert_eq!(status.media_ready, ["roll_62x29mm"]);
+    let (endpoint, handle) = server();
+    let discovered = wifi::discover_ipp(std::slice::from_ref(&endpoint), 1_000);
+    assert_eq!(discovered.len(), 1);
+    assert_eq!(discovered[0].0, endpoint);
+    handle.join().unwrap();
 }
 
 #[cfg(feature = "native-input")]

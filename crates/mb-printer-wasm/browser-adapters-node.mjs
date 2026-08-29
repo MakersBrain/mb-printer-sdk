@@ -53,6 +53,32 @@ try {
 } finally { globalThis.setTimeout = realSetTimeout; }
 assert.deepEqual(observedDelays,[25,13],"safe increases and explicit unsafe diagnostic reductions are exact");
 
+const boundaryPlan = [{action:"subscribe-notifications"},command([1]),wait()];
+for (const failedOperation of ["subscribe","write","wait"]) {
+  const disconnected = {
+    payloadLimit:4,calls:[],
+    async subscribeNotifications(){this.calls.push("subscribe");if(failedOperation==="subscribe")throw new Error("disconnect");return true},
+    async write(bytes){this.calls.push("write");if(failedOperation==="write")throw new Error("disconnect")},
+    async waitForResponse(){this.calls.push("wait");if(failedOperation==="wait")throw new Error("disconnect");return {kind:"response",bytes:Uint8Array.of(1)}},
+  };
+  const result = await executePlan(boundaryPlan,disconnected);
+  assert.equal(result.status,failedOperation==="subscribe"?"cancelled-before-send":"outcome-unknown");
+  assert.equal(disconnected.calls.at(-1),failedOperation,"execution stops exactly at the failed boundary");
+}
+const everyEffectPlan=[{action:"subscribe-notifications"},command([1]),{action:"raster-write",bytes:[2,3,4,5],logical_chunk:4,delay_after_each_physical_write_ms:0},wait()];
+for(let failAt=0;failAt<5;failAt++){
+  let effect=0;
+  const disconnected={payloadLimit:2,calls:[],async subscribeNotifications(){this.calls.push("subscribe");if(effect++===failAt)throw new Error("disconnect");return true},async write(bytes){this.calls.push(`write:${bytes.length}`);if(effect++===failAt)throw new Error("disconnect")},async waitForResponse(){this.calls.push("wait");if(effect++===failAt)throw new Error("disconnect");return{kind:"response",bytes:Uint8Array.of(1)}}};
+  const result=await executePlan(everyEffectPlan,disconnected);
+  assert.notEqual(result.status,"completed",`disconnect at effect ${failAt} must stop the plan`);
+  assert.equal(disconnected.calls.length,failAt+1,`no effect follows disconnect ${failAt}`);
+}
+const firstConnection = {...transport(),async write(){throw new Error("disconnect")}};
+assert.equal((await executePlan([command([1])],firstConnection)).status,"outcome-unknown");
+const explicitReconnection = transport();
+assert.equal((await executePlan([command([1])],explicitReconnection)).status,"completed","a fresh explicit job may use a new connection");
+assert.equal(explicitReconnection.calls.filter(Array.isArray).length,1,"the failed connection is never replayed automatically");
+
 let controller = new AbortController(); controller.abort(); mock = transport();
 assert.equal((await executePlan([command([1])],mock,undefined,controller.signal)).status,"cancelled-before-send");
 assert.deepEqual(mock.calls, []);

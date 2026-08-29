@@ -85,7 +85,18 @@ pub fn protocol_plan_json(
         height,
         data,
     };
-    let plan = protocol::plan(&printer, &raster, &Default::default()).map_err(|e| e.to_string())?;
+    let options = protocol::Options {
+        brother_media: (printer.protocol == capabilities::Protocol::Brother).then_some(
+            protocol::BrotherMedia {
+                width_mm: 62,
+                length_mm: 29,
+                continuous: false,
+                feed_margin: 0,
+            },
+        ),
+        ..Default::default()
+    };
+    let plan = protocol::plan(&printer, &raster, &options).map_err(|e| e.to_string())?;
     serde_json::to_string(&plan).map_err(|e| e.to_string())
 }
 pub fn render_packed(input: &str) -> Result<Vec<u8>, String> {

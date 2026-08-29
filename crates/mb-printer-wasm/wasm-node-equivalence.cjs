@@ -31,6 +31,25 @@ for (const test of templateCorpus.cases) {
 }
 const plan = JSON.parse(wasm.renderProtocolPlan(documentJson, "m03"));
 if (plan.protocol !== "m-series" || plan.actions.length === 0) throw new Error("WASM plan diverged");
+const execution = JSON.parse(fs.readFileSync(path.join(__dirname,"../mb-printer-native/tests/fixtures/execution-contract.json"),"utf8"));
+const matrixBytes = Array.from({length:execution.raster.widthBytes*execution.raster.height},(_,index)=>index&255);
+const debugValidation = value => value === "brother-status32" ? "BrotherStatus32" : "AnyNotification";
+for (const model of execution.models) {
+  const actions = JSON.parse(wasm.protocolPlan(model,execution.raster.widthBytes,execution.raster.height,JSON.stringify(matrixBytes))).actions;
+  for (const payload of execution.payloads) {
+    const events=[];
+    for (const action of actions) {
+      if(action.action==="job-boundary")events.push(`b:${action.kind==="start"?"Start":"End"}`);
+      else if(action.action==="subscribe-notifications")events.push("s");
+      else if(action.action==="delay")events.push(`d:${action.milliseconds}`);
+      else if(action.action==="command-write")events.push(`w:${Buffer.from(action.bytes).toString("hex")}`);
+      else if(action.action==="raster-write")for(let logical=0;logical<action.bytes.length;logical+=action.logical_chunk)for(let physical=logical;physical<Math.min(logical+action.logical_chunk,action.bytes.length);physical+=payload){events.push(`w:${Buffer.from(action.bytes.slice(physical,Math.min(physical+payload,logical+action.logical_chunk,action.bytes.length))).toString("hex")}`);events.push(`d:${action.delay_after_each_physical_write_ms}`)}
+      else if(action.action==="wait-for-response")events.push(`q:${action.timeout_ms}:${action.fallback_delay_ms}:${debugValidation(action.validation)}`);
+    }
+    const digest=require("node:crypto").createHash("sha256").update(JSON.stringify(events)).digest("hex");
+    if(digest!==execution.expectedSha256[`${model}@${payload}`])throw new Error(`native/WASM physical matrix diverged: ${model}@${payload}`);
+  }
+}
 const optionPlan = JSON.parse(wasm.renderProtocolPlanWithOptions(documentJson, "m03", JSON.stringify({copies:2,density:8})));
 if (optionPlan.actions.filter(action => action.action === "command-write" && action.name === "ESC @ init").length !== 2) throw new Error("WASM copies option diverged");
 if (!optionPlan.actions.some(action => action.action === "command-write" && action.name === "GS | density" && action.bytes.join() === "29,124,8")) throw new Error("WASM density option diverged");

@@ -21,3 +21,9 @@ python3 "$sdk_root/scripts/stamp_wasm_bindings.py" "$crate/pkg"
 cp "$sdk_root/LICENSE" "$crate/LICENSE"
 (cd "$crate" && npm run build:adapters && npm run check:types)
 cp "$sdk_root/schema/mb-label-v4.schema.json" "$crate/dist/mb-label-v4.schema.json"
+mkdir -p "$crate/dist/hardware-acceptance"
+cp "$sdk_root/fixtures/hardware/README.md" \
+  "$sdk_root/fixtures/hardware/matrix.json" \
+  "$sdk_root/fixtures/hardware/report.schema.json" \
+  "$sdk_root/fixtures/hardware/report-template.json" \
+  "$crate/dist/hardware-acceptance/"

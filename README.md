@@ -25,3 +25,9 @@ cargo test --workspace
 Licensed under AGPL-3.0-or-later. Protocol compatibility behavior is derived
 from the frozen Python implementation and the documented Phomymo reference at
 commit `1f58d3f0e7f941b9143277cda828380149e56855`.
+
+Physical qualification is tracked by the machine-readable
+[`fixtures/hardware/matrix.json`](fixtures/hardware/matrix.json) contract. The
+three historical successful prints remain provisional until complete signed
+reports satisfy the bundled schema; synthetic tests never claim hardware
+acceptance.

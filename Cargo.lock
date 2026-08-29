@@ -1239,6 +1239,8 @@ dependencies = [
  "libc",
  "mb-printer-core",
  "rusb",
+ "serde",
+ "serde_json",
  "serialport",
  "sha2",
  "thiserror 2.0.20",

@@ -390,6 +390,24 @@ pub mod usb {
         pub product: Option<String>,
         pub serial_number: Option<String>,
     }
+    /// Select one deterministic bulk endpoint for a previously resolved device.
+    /// Printer-class interfaces win, followed by interface/alternate/endpoint order.
+    pub fn select_bulk_candidate(
+        candidates: &[UsbBulkCandidate],
+        identity: UsbIdentity,
+    ) -> Option<&UsbBulkCandidate> {
+        candidates
+            .iter()
+            .filter(|candidate| candidate.identity == identity)
+            .min_by_key(|candidate| {
+                (
+                    candidate.interface_class != 7,
+                    candidate.interface,
+                    candidate.alternate_setting,
+                    candidate.out_endpoint,
+                )
+            })
+    }
     pub fn discover_rusb() -> Result<Vec<UsbIdentity>, String> {
         let context = rusb::Context::new()
             .map_err(|error| format!("USB context initialization failed: {error}"))?;
@@ -629,12 +647,11 @@ pub mod usb {
         response_limit: usize,
         timeout_ms: u64,
     ) -> Result<RusbTransport, String> {
-        let candidate = discover_rusb_bulk()?
-            .into_iter()
-            .find(|candidate| candidate.identity == identity)
+        let candidates = discover_rusb_bulk()?;
+        let candidate = select_bulk_candidate(&candidates, identity)
             .ok_or_else(|| "USB device has no bulk OUT interface".to_owned())?;
         open_rusb_with_limits(
-            &candidate,
+            candidate,
             usize::from(candidate.max_packet_size),
             command_limit,
             response_limit,
@@ -650,6 +667,9 @@ pub mod ble {
         Central, CharPropFlags, Manager as _, Peripheral as _, ScanFilter, WriteType,
     };
     use futures_util::StreamExt;
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc::{self, Receiver};
     pub trait BleGattBackend {
         fn subscribe(&mut self) -> Result<bool, String>;
@@ -698,6 +718,67 @@ pub mod ble {
                 Some(bytes) => WaitOutcome::Response(bytes),
                 None => WaitOutcome::Timeout,
             })
+        }
+    }
+    /// Injectable Tokio-native GATT boundary used by services and contract tests.
+    pub type AsyncBleFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, String>> + Send + 'a>>;
+    pub trait AsyncBleGattBackend: Send {
+        fn subscribe(&mut self) -> AsyncBleFuture<'_, bool>;
+        fn write_without_response<'a>(&'a mut self, bytes: &'a [u8]) -> AsyncBleFuture<'a, ()>;
+        fn wait_notification(&mut self, timeout_ms: u64) -> AsyncBleFuture<'_, Option<Vec<u8>>>;
+        fn disconnect(&mut self) -> AsyncBleFuture<'_, ()>;
+    }
+    /// Serializes all GATT effects and exposes notification availability explicitly.
+    pub struct AsyncBleTransport<B> {
+        backend: tokio::sync::Mutex<B>,
+        notifications: AtomicBool,
+        payload_limit: usize,
+    }
+    impl<B: AsyncBleGattBackend> AsyncBleTransport<B> {
+        pub fn new(backend: B, payload_limit: usize) -> Result<Self, String> {
+            if payload_limit == 0 {
+                return Err("BLE payload limit must be positive".into());
+            }
+            Ok(Self {
+                backend: tokio::sync::Mutex::new(backend),
+                notifications: AtomicBool::new(false),
+                payload_limit,
+            })
+        }
+        pub async fn subscribe_notifications(&self) -> Result<bool, String> {
+            let available = self.backend.lock().await.subscribe().await?;
+            self.notifications.store(available, Ordering::Release);
+            Ok(available)
+        }
+        pub async fn write(&self, bytes: &[u8]) -> Result<(), String> {
+            if bytes.len() > self.payload_limit {
+                return Err("BLE write exceeds declared payload limit".into());
+            }
+            self.backend
+                .lock()
+                .await
+                .write_without_response(bytes)
+                .await
+        }
+        pub async fn wait_notification(&self, timeout_ms: u64) -> Result<WaitOutcome, String> {
+            if !self.notifications.load(Ordering::Acquire) {
+                return Ok(WaitOutcome::Unavailable);
+            }
+            Ok(
+                match self
+                    .backend
+                    .lock()
+                    .await
+                    .wait_notification(timeout_ms)
+                    .await?
+                {
+                    Some(bytes) => WaitOutcome::Response(bytes),
+                    None => WaitOutcome::Timeout,
+                },
+            )
+        }
+        pub async fn disconnect(&self) -> Result<(), String> {
+            self.backend.lock().await.disconnect().await
         }
     }
     pub fn discover_btleplug(timeout_ms: u64) -> Result<Vec<DiscoveredPrinter>, String> {

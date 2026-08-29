@@ -1,0 +1,13 @@
+{
+  "schemaVersion":1,"spdxLicense":"AGPL-3.0-or-later","hardwareClaim":true,"cellId":"REQUIRED",
+  "catalogIds":["REQUIRED"],
+  "device":{"manufacturer":"REQUIRED","model":"REQUIRED","serialNumber":"REQUIRED","firmwareVersion":"REQUIRED"},
+  "transport":{"kind":"ble","endpoint":"REQUIRED","negotiatedPayloadBytes":20,"commandPayloadBytes":20},
+  "platform":{"os":"REQUIRED","osVersion":"REQUIRED","architecture":"REQUIRED","application":"mb-printer","applicationVersion":"REQUIRED"},
+  "media":{"identifier":"REQUIRED","widthMicrometres":1,"heightMicrometres":0,"continuous":false,"cutMode":"REQUIRED"},
+  "job":{"copies":1,"density":1,"result":"printed-and-inspected","physicalLabelsObserved":1,"notes":"REQUIRED"},
+  "trace":{"artifact":"REQUIRED","sha256":"0000000000000000000000000000000000000000000000000000000000000000","sdkCommit":"0000000","cliOrEditorCommit":"0000000","eventCount":1},
+  "operator":{"name":"REQUIRED","organization":"REQUIRED","keyId":"REQUIRED"},
+  "capturedAt":"1970-01-01T00:00:00Z",
+  "signature":{"algorithm":"ed25519","canonicalization":"RFC8785","valueBase64":"UkVRVUlSRUQtUkVRVUlSRUQtUkVRVUlSRUQtUkVRVUlSRUQtUkVRVUlSRUQ="}
+}
