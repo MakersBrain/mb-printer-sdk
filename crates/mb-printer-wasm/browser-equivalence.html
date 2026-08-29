@@ -1,0 +1,70 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<meta charset="utf-8">
+<title>mb-printer WASM browser equivalence</title>
+<pre id="result">RUNNING</pre>
+<script type="module">
+const result = document.querySelector("#result");
+try {
+  const wasm = await import("./pkg/web/mb_printer_wasm.js");
+  const adapters = await import("./dist/browser-adapters.js");
+  await wasm.default();
+  const fixture = await fetch("../../fixtures/wasm/equivalence.json").then((response) => response.json());
+  const documentJson = JSON.stringify(fixture.document);
+  if (wasm.validateDocument(documentJson) !== "[]") throw new Error("validation");
+  const templateCorpus = await fetch("../../fixtures/template/corpus.json").then(response => response.json());
+  for (const test of templateCorpus.cases) {
+    try {
+      const actual = wasm.evaluateTemplateContext(test.template, JSON.stringify(test.fields), test.locale, test.date);
+      if (test.error || actual !== test.output) throw new Error(`template ${test.name}: ${actual}`);
+    } catch (error) {
+      if (!test.error || !String(error).includes(test.error)) throw error;
+    }
+  }
+  const packed = [...wasm.renderPacked(documentJson)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  if (packed !== fixture.expectedPackedHex) throw new Error("render bytes");
+  const pdf = wasm.renderBatchPdf(JSON.stringify([fixture.document, fixture.document]));
+  const pages = JSON.parse(wasm.normalizePdf(pdf, 254, false));
+  if (pages.length !== 2 || pages[0].rasterWidth !== 80 || pages[0].sourcePage !== 1 || pages[1].sourcePage !== 2) throw new Error("multipage PDF provenance");
+  let malformed = false;
+  try { wasm.normalizePdf(Uint8Array.from([1, 2, 3]), 72, true); } catch { malformed = true; }
+  if (!malformed) throw new Error("malformed PDF accepted");
+  const a4 = structuredClone(fixture.document);
+  a4.media = {width:210000,height:297000,unit:"micrometre",dpi:36,orientation:"portrait",printableBounds:{x:0,y:0,width:210000,height:297000},shape:"rectangle"};
+  a4.elements[0].transform = {x:0,y:0,width:210000,height:297000};
+  const stamps = JSON.parse(wasm.extractLaPostePdf("L24A", wasm.renderPdf(JSON.stringify(a4)), 36));
+  if (stamps.length !== 24 || stamps[0].sourcePage !== 1 || stamps[0].slot !== 1 || stamps[23].slot !== 24) throw new Error("La Poste PDF provenance");
+  const usbWrites = [];
+  const usb = new adapters.WebUsbTransport({
+    async transferOut(_endpoint, data) { usbWrites.push([...new Uint8Array(data)]); },
+    async transferIn() { return {data:new DataView(Uint8Array.from([1]).buffer)}; },
+  }, 2, 1, 64);
+  const completed = await adapters.executePlan([{action:"command-write",name:"probe",bytes:[1,2,3],atomic:true}], usb);
+  if (completed.status !== "completed") throw new Error("WebUSB structured result");
+  if (usbWrites.length !== 1 || usbWrites[0].join() !== "1,2,3") throw new Error("WebUSB adapter");
+  class MockCharacteristic extends EventTarget {
+    value = null; writes = [];
+    async startNotifications() {}
+    async writeValueWithoutResponse(data) { this.writes.push([...new Uint8Array(data)]); }
+  }
+  const characteristic = new MockCharacteristic();
+  const bluetooth = new adapters.WebBluetoothTransport(characteristic, characteristic, 64);
+  await bluetooth.subscribeNotifications();
+  await bluetooth.write(Uint8Array.from([4,5]));
+  if (characteristic.writes[0].join() !== "4,5") throw new Error("WebBluetooth adapter");
+  const mock = {payloadLimit:2,calls:[],async subscribeNotifications(){this.calls.push("s");return false},async write(v){this.calls.push([...v])},async waitForResponse(){return {kind:"timeout"}}};
+  let rejected=false; try { await adapters.executePlan([{action:"command-write",name:"ok",bytes:[1],atomic:true},{action:"command-write",name:"bad",bytes:[1,2,3],atomic:true}],mock); } catch { rejected=true; }
+  if (!rejected || mock.calls.length) throw new Error("atomic preflight");
+  const timeoutResult = await adapters.executePlan([{action:"wait-for-response",timeout_ms:1,fallback_delay_ms:5,validation:"any-notification"}],mock);
+  if (timeoutResult.status !== "outcome-unknown") throw new Error("timeout/fallback distinction");
+  const aborted = new AbortController(); aborted.abort();
+  const cancelled = await adapters.executePlan([{action:"command-write",name:"cancel",bytes:[1],atomic:true}],mock,undefined,aborted.signal);
+  if (cancelled.status !== "cancelled-before-send") throw new Error("structured cancellation");
+  const invalidBrother = {...mock,async waitForResponse(){return {kind:"response",bytes:new Uint8Array(32)}}};
+  const invalidStatus = await adapters.executePlan([{action:"wait-for-response",timeout_ms:1,fallback_delay_ms:0,validation:"brother-status32"}],invalidBrother);
+  if (invalidStatus.status !== "outcome-unknown") throw new Error("Brother response validation");
+  result.textContent = "MB_WASM_BROWSER_PASS";
+} catch (error) {
+  result.textContent = `MB_WASM_BROWSER_FAIL: ${error?.stack ?? error}`;
+}
+</script>

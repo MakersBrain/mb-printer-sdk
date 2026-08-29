@@ -1,0 +1,5 @@
+{
+  "$comment": "SPDX-License-Identifier: AGPL-3.0-or-later",
+  "compilerOptions": {"target":"ES2022","module":"ESNext","strict":true,"noEmit":true,"lib":["ES2022","DOM"]},
+  "include": ["browser-adapters.ts", "schema-types.generated.ts"]
+}

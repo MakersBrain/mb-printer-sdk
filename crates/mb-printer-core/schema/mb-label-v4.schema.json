@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://makersbrain.com/schemas/mb-label-v4.schema.json",
+  "$comment": "SPDX-License-Identifier: AGPL-3.0-or-later",
+  "title": "Makers' Brain Label Document v4",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "name", "media", "coordinateSystem", "elements"],
+  "properties": {
+    "version": {"const": 4}, "name": {"type": "string", "minLength": 1},
+    "media": {"$ref": "#/$defs/media"}, "coordinateSystem": {"$ref": "#/$defs/coordinates"},
+    "elements": {"type": "array", "items": {"$ref": "#/$defs/element"}},
+    "resources": {"type": "array", "items": {"$ref": "#/$defs/resource"}, "default": []},
+    "fields": {"type": "array", "items": {"type":"object","additionalProperties":false,"required":["key","label"],"properties":{"key":{"type":"string"},"label":{"type":"string"}}}, "default": []},
+    "extensions": {"type":"object","propertyNames":{"pattern":"^[A-Za-z0-9._-]+:[A-Za-z0-9._-]+$"},"default":{}}
+  },
+  "$defs": {
+    "bounds": {"type":"object","additionalProperties":false,"required":["x","y","width","height"],"properties":{"x":{"type":"integer"},"y":{"type":"integer"},"width":{"type":"integer","minimum":1},"height":{"type":"integer","minimum":1}}},
+    "media": {"type":"object","additionalProperties":false,"required":["width","height","unit","dpi","orientation","printableBounds","shape"],"properties":{"width":{"type":"integer","minimum":1},"height":{"type":"integer","minimum":1},"unit":{"const":"micrometre"},"dpi":{"type":"integer","minimum":1},"orientation":{"enum":["portrait","landscape"]},"printableBounds":{"$ref":"#/$defs/bounds"},"shape":{"enum":["rectangle","round"]},"continuous":{"type":"boolean","default":false},"zones":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["id","bounds"],"properties":{"id":{"type":"string","minLength":1},"bounds":{"$ref":"#/$defs/bounds"},"cloneOf":{"type":["string","null"]}}},"default":[]}}},
+    "coordinates": {"type":"object","additionalProperties":false,"required":["unit","origin","rounding"],"properties":{"unit":{"const":"micrometre"},"origin":{"const":"top-left"},"rounding":{"const":"half-away-from-zero"}}},
+    "resource": {"type":"object","additionalProperties":false,"required":["id","mediaType","sha256","dataBase64"],"properties":{"id":{"type":"string","minLength":1},"mediaType":{"type":"string"},"sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},"dataBase64":{"type":"string"}}},
+    "element":{"oneOf":[{"$ref":"#/$defs/text"},{"$ref":"#/$defs/image"},{"$ref":"#/$defs/svg"},{"$ref":"#/$defs/line"},{"$ref":"#/$defs/rectangle"},{"$ref":"#/$defs/ellipse"},{"$ref":"#/$defs/triangle"},{"$ref":"#/$defs/barcode"},{"$ref":"#/$defs/qr"},{"$ref":"#/$defs/group"}]},
+    "transform":{"type":"object","additionalProperties":false,"required":["x","y","width","height"],"properties":{"x":{"type":"integer"},"y":{"type":"integer"},"width":{"type":"integer","minimum":1},"height":{"type":"integer","minimum":1},"rotationMillidegrees":{"type":"integer","minimum":-360000,"maximum":360000,"default":0}}},
+    "constraints":{"type":"object","additionalProperties":false,"properties":{"preserveAspect":{"type":"boolean"},"zone":{"type":["string","null"]}}},
+    "common":{"type":"object","required":["id","transform","zOrder"],"properties":{"id":{"type":"string","minLength":1},"transform":{"$ref":"#/$defs/transform"},"zOrder":{"type":"integer"},"visible":{"type":"boolean"},"locked":{"type":"boolean"},"groupId":{"type":["string","null"]},"constraints":{"anyOf":[{"$ref":"#/$defs/constraints"},{"type":"null"}]}}},
+    "text":{"type":"object","allOf":[{"$ref":"#/$defs/common"},{"type":"object","required":["type","text","fontSize","horizontalAlign","verticalAlign","overflow"],"properties":{"type":{"const":"text"},"text":{"type":"string"},"fontResource":{"type":["string","null"]},"fontSize":{"type":"integer","minimum":1},"horizontalAlign":{"enum":["left","center","right"]},"verticalAlign":{"enum":["top","middle","bottom"]},"overflow":{"enum":["no-wrap","word-wrap","clip","shrink-to-fit","auto-height"]}}}],"unevaluatedProperties":false},
+    "image":{"type":"object","allOf":[{"$ref":"#/$defs/common"},{"type":"object","required":["type","resource"],"properties":{"type":{"const":"image"},"resource":{"type":"string","minLength":1},"crop":{"anyOf":[{"$ref":"#/$defs/bounds"},{"type":"null"}]}}}],"unevaluatedProperties":false},
+    "svg":{"type":"object","allOf":[{"$ref":"#/$defs/common"},{"type":"object","required":["type","resource"],"properties":{"type":{"const":"svg"},"resource":{"type":"string","minLength":1}}}],"unevaluatedProperties":false},
+    "line":{"type":"object","allOf":[{"$ref":"#/$defs/common"},{"type":"object","required":["type","strokeWidth"],"properties":{"type":{"const":"line"},"strokeWidth":{"type":"integer","minimum":1}}}],"unevaluatedProperties":false},
+    "rectangle":{"type":"object","allOf":[{"$ref":"#/$defs/common"},{"type":"object","required":["type","strokeWidth"],"properties":{"type":{"const":"rectangle"},"strokeWidth":{"type":"integer","minimum":1},"fill":{"type":"boolean"}}}],"unevaluatedProperties":false},
+    "ellipse":{"type":"object","allOf":[{"$ref":"#/$defs/common"},{"type":"object","required":["type","strokeWidth"],"properties":{"type":{"const":"ellipse"},"strokeWidth":{"type":"integer","minimum":1},"fill":{"type":"boolean"}}}],"unevaluatedProperties":false},
+    "triangle":{"type":"object","allOf":[{"$ref":"#/$defs/common"},{"type":"object","required":["type","strokeWidth"],"properties":{"type":{"const":"triangle"},"strokeWidth":{"type":"integer","minimum":1},"fill":{"type":"boolean"}}}],"unevaluatedProperties":false},
+    "barcode":{"type":"object","allOf":[{"$ref":"#/$defs/common"},{"type":"object","required":["type","data","symbology"],"properties":{"type":{"const":"barcode"},"data":{"type":"string"},"symbology":{"enum":["code128","ean13","upc-a","code39"]},"humanReadable":{"type":"boolean"}}}],"unevaluatedProperties":false},
+    "qr":{"type":"object","allOf":[{"$ref":"#/$defs/common"},{"type":"object","required":["type","data","errorCorrection"],"properties":{"type":{"const":"qr-code"},"data":{"type":"string"},"errorCorrection":{"enum":["L","M","Q","H"]}}}],"unevaluatedProperties":false},
+    "group":{"type":"object","allOf":[{"$ref":"#/$defs/common"},{"type":"object","required":["type","children"],"properties":{"type":{"const":"group"},"children":{"type":"array","items":{"type":"string","minLength":1},"uniqueItems":true}}}],"unevaluatedProperties":false}
+  }
+}

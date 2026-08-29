@@ -1,0 +1,36 @@
+{
+  "name": "@makersbrain/printer-sdk",
+  "version": "0.1.0",
+  "license": "AGPL-3.0-or-later",
+  "type": "module",
+  "description": "Deterministic v4 label rendering and thermal-printer protocol SDK",
+  "repository": {"type":"git","url":"git+https://github.com/MakersBrain/mb-printer-sdk.git","directory":"crates/mb-printer-wasm"},
+  "homepage": "https://github.com/MakersBrain/mb-printer-sdk#readme",
+  "bugs": {"url":"https://github.com/MakersBrain/mb-printer-sdk/issues"},
+  "keywords": ["thermal-printer", "labels", "wasm", "webusb", "webbluetooth"],
+  "engines": {"node":">=20"},
+  "publishConfig": {"access":"public","provenance":true},
+  "main": "./pkg/node/mb_printer_wasm.cjs",
+  "module": "./pkg/web/mb_printer_wasm.js",
+  "types": "./pkg/web/mb_printer_wasm.d.ts",
+  "exports": {
+    ".": {"types":"./pkg/web/mb_printer_wasm.d.ts","browser":"./pkg/web/mb_printer_wasm.js","import":"./pkg/web/mb_printer_wasm.js","require":"./pkg/node/mb_printer_wasm.cjs"},
+    "./web": {"types":"./pkg/web/mb_printer_wasm.d.ts","default":"./pkg/web/mb_printer_wasm.js"},
+    "./node": {"types":"./pkg/node/mb_printer_wasm.d.ts","default":"./pkg/node/mb_printer_wasm.cjs"},
+    "./adapters": {"types":"./dist/browser-adapters.d.ts","default":"./dist/browser-adapters.js"},
+    "./schema": {"types":"./dist/schema-types.generated.d.ts","default":"./dist/schema-types.generated.js"}
+  },
+  "files": ["pkg", "dist", "LICENSE", "README.md"],
+  "sideEffects": false,
+  "x-provenance": {"generator":"../../scripts/build_wasm_packages.sh","wasmBindgen":"0.2.127","license":"AGPL-3.0-or-later"},
+  "scripts": {
+    "build": "sh ../../scripts/build_wasm_packages.sh",
+    "build:adapters": "tsc --noEmit false --declaration --outDir dist",
+    "check:types": "tsc --noEmit",
+    "test:schema": "python3 ../../scripts/generate_schema_projection.py --check && node schema-corpus.mjs",
+    "test:wasm-node": "sh ../../scripts/test_wasm_node.sh",
+    "test:wasm-browser": "sh ../../scripts/test_wasm_browser.sh",
+    "prepack": "npm run build"
+  },
+  "devDependencies": {"ajv": "8.18.0", "typescript": "5.9.2"}
+}

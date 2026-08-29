@@ -1,0 +1,16 @@
+{
+  "spdxLicense":"AGPL-3.0-or-later",
+  "description":"Deterministic protocol option and pre-protocol placement matrix",
+  "cases":[
+    {"model":"m03","density":1,"copies":1,"continuous":false,"rotation":"none","alignment":"left","mtu":23},
+    {"model":"m03","density":8,"copies":2,"continuous":true,"rotation":"clockwise90","alignment":"right","mtu":517},
+    {"model":"m02","density":3,"copies":2,"continuous":false,"rotation":"none","alignment":"center","mtu":64},
+    {"model":"m04s-53","density":7,"copies":1,"continuous":true,"rotation":"clockwise90","alignment":"left","mtu":185},
+    {"model":"m110","density":2,"copies":2,"continuous":false,"rotation":"none","alignment":"right","mtu":23},
+    {"model":"d-series","density":8,"copies":1,"continuous":true,"rotation":"clockwise90","alignment":"center","mtu":517},
+    {"model":"p12","density":4,"copies":1,"continuous":false,"rotation":"clockwise90","alignment":"right","mtu":64},
+    {"model":"pm241","density":6,"copies":3,"continuous":true,"rotation":"none","alignment":"left","mtu":185},
+    {"model":"ql-1100","density":1,"copies":1,"continuous":false,"rotation":"none","alignment":"center","mtu":23},
+    {"model":"ql-1100","density":8,"copies":2,"continuous":false,"rotation":"clockwise90","alignment":"right","mtu":517}
+  ]
+}

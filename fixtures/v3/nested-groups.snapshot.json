@@ -1,0 +1,1 @@
+{"_license":"SPDX-License-Identifier: AGPL-3.0-or-later","elementIds":["picture","inner","caption","outer"],"memberships":{"picture":"inner","inner":"outer","caption":"outer"},"resourceMediaTypes":["image/png","font/ttf"],"resourceCount":2}

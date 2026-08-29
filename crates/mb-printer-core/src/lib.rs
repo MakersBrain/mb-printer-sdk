@@ -1,0 +1,16 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+#![forbid(unsafe_code)]
+
+pub mod capabilities;
+pub mod document;
+pub mod export;
+pub mod importer;
+pub mod laposte;
+pub mod pdf_import;
+pub mod protocol;
+pub mod raster;
+pub mod render;
+pub mod resources;
+pub mod template;
+
+pub use document::{Document, ValidationError};

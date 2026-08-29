@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+[package]
+name = "mb-printer-wasm"
+description = "Browser bindings for the Makers' Brain printer SDK"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+documentation = "https://docs.rs/mb-printer-wasm"
+readme = "README.md"
+keywords = ["thermal-printer", "label", "wasm", "webassembly"]
+categories = ["wasm", "graphics"]
+include = ["src/**", "tests/**", "Cargo.toml", "README.md", "LICENSE"]
+[lib]
+crate-type = ["cdylib", "rlib"]
+[dependencies]
+mb-printer-core = { version = "=0.1.0", path = "../mb-printer-core" }
+serde_json.workspace = true
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "=0.2.127"

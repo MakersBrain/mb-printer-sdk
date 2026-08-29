@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+[package]
+name = "mb-printer-native"
+description = "Native execution boundary for mb-printer action plans"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+documentation = "https://docs.rs/mb-printer-native"
+readme = "README.md"
+keywords = ["thermal-printer", "label", "transport"]
+categories = ["hardware-support"]
+include = ["src/**", "tests/**", "Cargo.toml", "README.md", "LICENSE"]
+[dependencies]
+mb-printer-core = { version = "=0.1.0", path = "../mb-printer-core" }
+thiserror.workspace = true

@@ -1,0 +1,22 @@
+{
+  "version":4,"name":"all elements",
+  "media":{"width":100000,"height":50000,"unit":"micrometre","dpi":203,"orientation":"landscape","printableBounds":{"x":0,"y":0,"width":100000,"height":50000},"shape":"rectangle","zones":[{"id":"z1","bounds":{"x":0,"y":0,"width":50000,"height":50000}},{"id":"z2","bounds":{"x":50000,"y":0,"width":50000,"height":50000},"cloneOf":"z1"}]},
+  "coordinateSystem":{"unit":"micrometre","origin":"top-left","rounding":"half-away-from-zero"},
+  "resources":[
+    {"id":"png","mediaType":"image/png","sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","dataBase64":""},
+    {"id":"svg","mediaType":"image/svg+xml","sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","dataBase64":""},
+    {"id":"font","mediaType":"font/ttf","sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","dataBase64":""}
+  ],
+  "elements":[
+    {"type":"group","id":"g","transform":{"x":0,"y":0,"width":10000,"height":10000},"zOrder":0,"children":["t"]},
+    {"type":"text","id":"t","transform":{"x":1000,"y":1000,"width":10000,"height":5000},"zOrder":1,"groupId":"g","text":"hello","fontResource":"font","fontSize":2000,"horizontalAlign":"center","verticalAlign":"middle","overflow":"word-wrap"},
+    {"type":"image","id":"i","transform":{"x":12000,"y":1000,"width":5000,"height":5000},"zOrder":2,"resource":"png","crop":{"x":0,"y":0,"width":1,"height":1}},
+    {"type":"svg","id":"s","transform":{"x":18000,"y":1000,"width":5000,"height":5000},"zOrder":3,"resource":"svg"},
+    {"type":"line","id":"l","transform":{"x":1000,"y":8000,"width":5000,"height":1000},"zOrder":4,"strokeWidth":100},
+    {"type":"rectangle","id":"r","transform":{"x":7000,"y":8000,"width":5000,"height":5000},"zOrder":5,"strokeWidth":100,"fill":true},
+    {"type":"ellipse","id":"e","transform":{"x":13000,"y":8000,"width":5000,"height":5000},"zOrder":6,"strokeWidth":100,"fill":false},
+    {"type":"triangle","id":"tri","transform":{"x":19000,"y":8000,"width":5000,"height":5000},"zOrder":7,"strokeWidth":100,"fill":false},
+    {"type":"barcode","id":"b","transform":{"x":25000,"y":8000,"width":15000,"height":5000},"zOrder":8,"data":"ABC","symbology":"code39","humanReadable":true},
+    {"type":"qr-code","id":"q","transform":{"x":41000,"y":8000,"width":8000,"height":8000},"zOrder":9,"constraints":{"preserveAspect":true,"zone":"z1"},"data":"hello","errorCorrection":"M"}
+  ],"fields":[{"key":"name","label":"Name"}],"extensions":{"makersbrain:test":true}
+}

@@ -1,0 +1,15 @@
+{
+  "_meta": {
+    "spdxLicense": "AGPL-3.0-or-later",
+    "purpose": "Shared native and Node/WASM byte-equivalence fixture"
+  },
+  "document": {
+    "version": 4,
+    "name": "wasm equivalence",
+    "media": {"width": 8000, "height": 1000, "unit": "micrometre", "dpi": 254, "orientation": "landscape", "printableBounds": {"x": 0, "y": 0, "width": 8000, "height": 1000}, "shape": "rectangle"},
+    "coordinateSystem": {"unit": "micrometre", "origin": "top-left", "rounding": "half-away-from-zero"},
+    "elements": [{"type": "rectangle", "id": "fill", "transform": {"x": 0, "y": 0, "width": 8000, "height": 1000}, "zOrder": 0, "strokeWidth": 100, "fill": true}],
+    "resources": [], "fields": [], "extensions": {}
+  },
+  "expectedPackedHex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+}

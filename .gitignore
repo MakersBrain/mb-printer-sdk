@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+/target/
+/pkg/
+/crates/mb-printer-wasm/node_modules/
+/.tools/
+/crates/mb-printer-wasm/pkg-node/
+/crates/mb-printer-wasm/pkg/
+/crates/mb-printer-wasm/dist/
+__pycache__/
+*.py[cod]

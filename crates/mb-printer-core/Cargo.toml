@@ -1,0 +1,35 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+[package]
+name = "mb-printer-core"
+description = "Portable document, template, capability and protocol core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+documentation = "https://docs.rs/mb-printer-core"
+readme = "README.md"
+keywords = ["thermal-printer", "label", "wasm", "pdf"]
+categories = ["graphics", "encoding"]
+include = ["src/**", "tests/**", "data/**", "schema/**", "fixtures/**", "Cargo.toml", "README.md", "LICENSE"]
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+sha2.workspace = true
+png = "0.18"
+qrcode = { version = "0.14", default-features = false }
+font8x8 = "0.3"
+barcoders = { version = "2", default-features = false }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+resvg = { version = "0.45", default-features = false, features = ["raster-images"] }
+base64 = "0.22"
+fontdue = "=0.9.4"
+rustybuzz = "=0.20.1"
+hayro = { version = "=0.7.1", default-features = false }
+
+[dev-dependencies]
+jsonschema = { version = "0.33", default-features = false }

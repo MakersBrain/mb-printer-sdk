@@ -1,0 +1,198 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+use mb_printer_core::{capabilities, document::*, importer, protocol, template};
+use std::collections::BTreeMap;
+#[test]
+fn printer_definitions_are_losslessly_loaded() {
+    let p = capabilities::bundled();
+    assert!(p.len() > 20);
+    assert_eq!(capabilities::detect("M02 PRO-123").unwrap().id, "m02-pro");
+    assert_eq!(capabilities::by_id("p12").unwrap().chunk_size(), 128)
+}
+#[test]
+fn template_is_deterministic_and_allowlisted() {
+    let f = BTreeMap::from([("name".into(), "  Été  ".into())]);
+    assert_eq!(
+        template::evaluate("{{name|trim|upper}}", &f).unwrap(),
+        "ÉTÉ"
+    );
+    assert!(template::evaluate("{{name|eval}}", &f).is_err())
+}
+#[test]
+fn template_numeric_conditional_date_and_locale_are_injected() {
+    let f = BTreeMap::from([
+        ("price".into(), "12.5".into()),
+        ("state".into(), "ok".into()),
+        ("empty".into(), String::new()),
+    ]);
+    let ctx = template::Context {
+        fields: &f,
+        locale: "fr-FR",
+        current_date: "2026-08-29",
+    };
+    assert_eq!(template::evaluate_with_context("{{price|number:2}} {{state|if-eq:ok:YES:NO}} {{empty|if-empty:none:some}} {{@date|date:%d/%m/%Y}}",ctx).unwrap(),"12,50 YES none 29/08/2026")
+}
+#[test]
+fn v3_import_normalizes_dimensions_and_alignment() {
+    let v=importer::import_v3(r#"{"version":3,"name":"old","widthMm":30,"heightMm":20,"dotsPerMm":8,"elements":[{"id":"a","type":"text","x":0,"y":0,"width":80,"height":16,"fontSize":12,"text":"x","align":"centre","valign":"center"}]}"#).unwrap();
+    assert_eq!(v["media"]["width"], 30000);
+    assert_eq!(v["elements"][0]["horizontalAlign"], "center");
+    assert_eq!(v["elements"][0]["verticalAlign"], "middle");
+    let parsed: Document = serde_json::from_value(v).expect("importer must emit canonical v4");
+    parsed.validate().expect("imported v4 must validate")
+}
+#[test]
+fn v3_imports_resources_barcodes_groups_and_aliases() {
+    let input = r#"{"version":3,"widthMm":50,"heightMm":30,"dotsPerMm":8,"elements":[{"id":"img","type":"img","x":0,"y":0,"width":8,"height":8,"imageData":"data:image/png;base64,"},{"id":"svg","type":"svg","x":8,"y":0,"width":8,"height":8,"svgData":"<svg xmlns='http://www.w3.org/2000/svg' width='1' height='1'/>"},{"id":"bar","type":"bar-code","x":0,"y":8,"width":40,"height":8,"data":"ABC","format":"Code 39"},{"id":"txt","type":"text","x":0,"y":16,"width":40,"height":8,"fontSize":8,"text":"x","fontData":"AA=="},{"id":"grp","type":"group","x":0,"y":0,"width":40,"height":24,"children":["img","svg"]}]}"#;
+    let value = importer::import_v3(input).unwrap();
+    assert_eq!(value["resources"].as_array().unwrap().len(), 3);
+    assert_eq!(value["elements"][2]["symbology"], "code39");
+    let doc: Document = serde_json::from_value(value).unwrap();
+    doc.validate().unwrap()
+}
+#[test]
+fn strict_json_rejects_unknown_fields() {
+    let bad = r#"{"version":4,"name":"x","bogus":1,"media":{"width":1,"height":1,"unit":"micrometre","dpi":203,"orientation":"portrait","printableBounds":{"x":0,"y":0,"width":1,"height":1},"shape":"rectangle"},"coordinateSystem":{"unit":"micrometre","origin":"top-left","rounding":"half-away-from-zero"},"elements":[]}"#;
+    assert!(Document::from_json(bad).is_err())
+}
+#[test]
+fn all_protocols_emit_typed_boundaries_and_reference() {
+    for p in capabilities::bundled() {
+        let Some(w) = p.width_bytes else { continue };
+        let r = protocol::Raster {
+            width_bytes: w,
+            height: 1,
+            data: vec![0; w as usize],
+        };
+        let mut options = protocol::Options::default();
+        if p.protocol == capabilities::Protocol::Brother {
+            options.brother_media = Some(protocol::BrotherMedia {
+                width_mm: 62,
+                length_mm: 29,
+                continuous: false,
+                feed_margin: 0,
+            })
+        }
+        let plan = protocol::plan(&p, &r, &options).unwrap();
+        assert_eq!(plan.source_commit, protocol::SOURCE_COMMIT);
+        assert!(matches!(
+            plan.actions.first(),
+            Some(protocol::Action::JobBoundary {
+                kind: protocol::Boundary::Start
+            })
+        ));
+        assert!(matches!(
+            plan.actions.last(),
+            Some(protocol::Action::JobBoundary {
+                kind: protocol::Boundary::End
+            })
+        ))
+    }
+}
+#[test]
+fn m_series_timing_fixture() {
+    let p = capabilities::by_id("m03").unwrap();
+    let r = protocol::Raster {
+        width_bytes: 1,
+        height: 2,
+        data: vec![0xaa, 0x55],
+    };
+    let plan = protocol::plan(&p, &r, &Default::default()).unwrap();
+    let delays: Vec<_> = plan
+        .actions
+        .iter()
+        .filter_map(|a| {
+            if let protocol::Action::Delay { milliseconds } = a {
+                Some(*milliseconds)
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(delays, vec![100, 30, 50, 300, 800]);
+    assert!(plan.actions.iter().any(|a| matches!(
+        a,
+        protocol::Action::RasterWrite {
+            logical_chunk: 128,
+            delay_after_each_physical_write_ms: 20,
+            ..
+        }
+    )))
+}
+#[test]
+fn all_python_protocol_delay_fixtures_match() {
+    let cases = [
+        ("m02", vec![50, 100, 30, 300, 500]),
+        ("m04s-110", vec![30, 30, 30, 30, 300, 30, 30, 500]),
+        ("m110", vec![30, 30, 30, 300, 500]),
+        ("d-series", vec![30, 30, 100]),
+        ("pm241", vec![50; 9]),
+    ];
+    for (model, want) in cases {
+        let p = capabilities::by_id(model).unwrap();
+        let w = p.width_bytes.unwrap_or(48);
+        let r = protocol::Raster {
+            width_bytes: w,
+            height: 1,
+            data: vec![0; w as usize],
+        };
+        let got = protocol::plan(&p, &r, &Default::default())
+            .unwrap()
+            .actions
+            .into_iter()
+            .filter_map(|a| {
+                if let protocol::Action::Delay { milliseconds } = a {
+                    Some(milliseconds)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(got, want, "{model}")
+    }
+    let p = capabilities::by_id("p12").unwrap();
+    let r = protocol::Raster {
+        width_bytes: 12,
+        height: 1,
+        data: vec![0; 12],
+    };
+    let plan = protocol::plan(&p, &r, &Default::default()).unwrap();
+    assert_eq!(
+        plan.actions
+            .iter()
+            .filter(|a| matches!(
+                a,
+                protocol::Action::WaitForResponse {
+                    timeout_ms: 500,
+                    fallback_delay_ms: 500,
+                    ..
+                }
+            ))
+            .count(),
+        6
+    );
+    assert!(matches!(
+        plan.actions[1],
+        protocol::Action::SubscribeNotifications
+    ));
+}
+#[test]
+fn non_tspl_copies_repeat_the_complete_flow() {
+    let p = capabilities::by_id("m03").unwrap();
+    let r = protocol::Raster {
+        width_bytes: 1,
+        height: 1,
+        data: vec![0],
+    };
+    let o = protocol::Options {
+        copies: 2,
+        ..Default::default()
+    };
+    let plan = protocol::plan(&p, &r, &o).unwrap();
+    assert_eq!(
+        plan.actions
+            .iter()
+            .filter(|a| matches!(a,protocol::Action::CommandWrite{name,..}if name=="ESC @ init"))
+            .count(),
+        2
+    )
+}
