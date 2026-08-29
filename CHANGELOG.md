@@ -10,3 +10,5 @@ All notable changes follow Keep a Changelog; versions follow Semantic Versioning
 - Data-driven capabilities and typed plans for eight printer protocol families.
 - Native executor plus browser/Node WASM packages and WebBluetooth/WebUSB adapters.
 - Shared schema, semantic, Python protocol, native/WASM, Node, and Chromium fixtures.
+- Release and browser CI use only organization-approved actions plus the Chrome
+  installation already supplied by GitHub-hosted runners.

@@ -41,8 +41,14 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: crates/mb-printer-wasm/package-lock.json
-      - id: chrome
-        uses: browser-actions/setup-chrome@48483d551c22a1fe6154c6a195ccc6d5773dc8c4 # v2
+      - name: Locate hosted-runner Chrome
+        id: chrome
+        shell: bash
+        run: |
+          chrome_path="$(command -v google-chrome-stable || command -v google-chrome || command -v chromium)"
+          test -x "$chrome_path"
+          "$chrome_path" --version
+          echo "chrome-path=$chrome_path" >> "$GITHUB_OUTPUT"
       - run: npm ci
         working-directory: crates/mb-printer-wasm
       - run: npm run build
