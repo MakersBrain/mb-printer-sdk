@@ -18,3 +18,21 @@ fn wasm_facade_builds_a_rendered_protocol_plan() {
     assert_eq!(value["protocol"], "m-series");
     assert!(value["actions"].as_array().unwrap().len() > 5)
 }
+
+#[test]
+fn wasm_facade_infers_brother_62x29_media_and_printable_rows() {
+    let input = DOC
+        .replace("10000,\"height\":10000", "62000,\"height\":29000")
+        .replace("\"dpi\":203", "\"dpi\":300")
+        .replace(
+            "\"width\":10000,\"height\":10000},\"shape\"",
+            "\"width\":62000,\"height\":29000},\"shape\"",
+        );
+    let encoded = mb_printer_wasm::render_protocol_plan(&input, "ql-1110nwb").unwrap();
+    let plan: mb_printer_core::protocol::Plan = serde_json::from_str(&encoded).unwrap();
+    assert!(plan.actions.iter().any(|action| matches!(
+        action,
+        mb_printer_core::protocol::Action::CommandWrite { bytes, .. }
+            if bytes == &[0x1b, 0x69, 0x7a, 0xce, 0x0b, 62, 29, 0x0f, 0x01, 0, 0, 0, 0]
+    )));
+}

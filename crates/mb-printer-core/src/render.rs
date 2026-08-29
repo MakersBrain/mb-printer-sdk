@@ -4,7 +4,7 @@ use crate::document::{
 };
 use crate::raster::{Dither, GrayRaster, MonoRaster};
 use crate::{
-    capabilities::{Alignment, PrinterDefinition},
+    capabilities::{Alignment, PrinterDefinition, Protocol},
     protocol,
 };
 use font8x8::{BASIC_FONTS, UnicodeFonts};
@@ -91,6 +91,16 @@ pub fn render_for_printer(
     options: RenderOptions,
 ) -> Result<protocol::Raster, RenderError> {
     let mut raster = render(doc, options)?;
+    let brother_62x29 = printer.protocol == Protocol::Brother
+        && ((doc.media.width.abs_diff(62_000) <= 1_500
+            && doc.media.height.abs_diff(29_000) <= 1_500)
+            || (doc.media.width.abs_diff(29_000) <= 1_500
+                && doc.media.height.abs_diff(62_000) <= 1_500));
+    if brother_62x29 {
+        // DK-11209 has a 696 x 271 printable rectangle on the 1296-dot
+        // QL-1100-series head, offset 56 dots from the right edge.
+        raster = fit_mono_to_box(&raster, 696, 271)?;
+    }
     if printer.rotated {
         raster = raster.rotate(crate::raster::Rotation::Clockwise90);
     }
@@ -102,15 +112,66 @@ pub fn render_for_printer(
         Alignment::Center => crate::raster::Fit::Center,
         Alignment::Right => crate::raster::Fit::Right,
     };
-    let fitted = raster
-        .place_on_head_byte_aligned(head, fit, 0, 0)
-        .map_err(|_| RenderError::TooLarge)?;
+    let fitted = if brother_62x29 {
+        raster.place_on_head(head, crate::raster::Fit::Right, -56, 0)
+    } else {
+        raster.place_on_head_byte_aligned(head, fit, 0, 0)
+    }
+    .map_err(|_| RenderError::TooLarge)?;
     let data = fitted.pack_msb().map_err(|_| RenderError::TooLarge)?;
     Ok(protocol::Raster {
         width_bytes: head.div_ceil(8) as u16,
         height: fitted.height,
         data,
     })
+}
+
+fn fit_mono_to_box(image: &MonoRaster, width: u32, height: u32) -> Result<MonoRaster, RenderError> {
+    if width == 0 || height == 0 || image.width == 0 || image.height == 0 {
+        return Err(RenderError::TooLarge);
+    }
+    let scale_by_width =
+        u64::from(width) * u64::from(image.height) <= u64::from(height) * u64::from(image.width);
+    let (scaled_width, scaled_height) = if scale_by_width {
+        (
+            width,
+            ((u64::from(image.height) * u64::from(width) + u64::from(image.width) / 2)
+                / u64::from(image.width)) as u32,
+        )
+    } else {
+        (
+            ((u64::from(image.width) * u64::from(height) + u64::from(image.height) / 2)
+                / u64::from(image.height)) as u32,
+            height,
+        )
+    };
+    let mut scaled = MonoRaster {
+        width: scaled_width.max(1),
+        height: scaled_height.max(1),
+        pixels: vec![0; (scaled_width.max(1) * scaled_height.max(1)) as usize],
+    };
+    for y in 0..scaled.height {
+        for x in 0..scaled.width {
+            let source_x = u64::from(x) * u64::from(image.width) / u64::from(scaled.width);
+            let source_y = u64::from(y) * u64::from(image.height) / u64::from(scaled.height);
+            scaled.pixels[(y * scaled.width + x) as usize] =
+                image.pixels[(source_y as u32 * image.width + source_x as u32) as usize];
+        }
+    }
+    let mut output = MonoRaster {
+        width,
+        height,
+        pixels: vec![0; (width * height) as usize],
+    };
+    let left = (width - scaled.width) / 2;
+    let top = (height - scaled.height) / 2;
+    for y in 0..scaled.height {
+        let source = (y * scaled.width) as usize;
+        let destination = ((top + y) * width + left) as usize;
+        output.pixels[destination..destination + scaled.width as usize]
+            .copy_from_slice(&scaled.pixels[source..source + scaled.width as usize]);
+    }
+    Ok(output)
 }
 fn common(e: &Element) -> &Common {
     match e {

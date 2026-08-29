@@ -159,7 +159,35 @@ pub fn render_protocol_plan(input: &str, model: &str) -> Result<String, String> 
     let printer = capabilities::by_id(model).ok_or_else(|| format!("unknown model: {model}"))?;
     let raster = render::render_for_printer(&doc, &printer, Default::default())
         .map_err(|e| e.to_string())?;
-    let plan = protocol::plan(&printer, &raster, &Default::default()).map_err(|e| e.to_string())?;
+    let mut options = protocol::Options::default();
+    if printer.protocol == capabilities::Protocol::Brother {
+        let brother_62x29 = (doc.media.width.abs_diff(62_000) <= 1_500
+            && doc.media.height.abs_diff(29_000) <= 1_500)
+            || (doc.media.width.abs_diff(29_000) <= 1_500
+                && doc.media.height.abs_diff(62_000) <= 1_500);
+        let millimetres = |value: i64| {
+            u8::try_from(value.saturating_add(500) / 1000)
+                .map_err(|_| "Brother media dimension is outside range".to_owned())
+        };
+        options.continuous = doc.media.continuous;
+        options.brother_media = Some(protocol::BrotherMedia {
+            width_mm: if brother_62x29 {
+                62
+            } else {
+                millimetres(doc.media.width)?
+            },
+            length_mm: if doc.media.continuous {
+                0
+            } else if brother_62x29 {
+                29
+            } else {
+                millimetres(doc.media.height)?
+            },
+            continuous: doc.media.continuous,
+            feed_margin: 0,
+        });
+    }
+    let plan = protocol::plan(&printer, &raster, &options).map_err(|e| e.to_string())?;
     serde_json::to_string(&plan).map_err(|e| e.to_string())
 }
 #[cfg(target_arch = "wasm32")]
