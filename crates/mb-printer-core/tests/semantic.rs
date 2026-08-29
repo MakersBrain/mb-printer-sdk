@@ -30,5 +30,28 @@ fn groups_constraints_and_resource_types_are_checked() {
     assert!(
         e.iter()
             .any(|e| matches!(e, ValidationError::ResourceMedia(_)))
-    )
+    );
+
+    let e = validate(|v| v["elements"][0]["children"] = serde_json::json!([]));
+    assert!(e.iter().any(|e| matches!(e, ValidationError::Reference(_))));
+}
+#[test]
+fn schema_value_constraints_are_enforced_by_runtime_validation() {
+    let e = validate(|v| v["name"] = "".into());
+    assert!(e.iter().any(|e| matches!(e, ValidationError::Name)));
+    let e = validate(|v| v["elements"][1]["transform"]["rotationMillidegrees"] = 360_001.into());
+    assert!(e.iter().any(|e| matches!(e, ValidationError::Element(_))));
+    let e = validate(|v| {
+        let hash = v["resources"][0]["sha256"].as_str().unwrap().to_uppercase();
+        v["resources"][0]["sha256"] = hash.into();
+    });
+    assert!(
+        e.iter()
+            .any(|e| matches!(e, ValidationError::ResourceHash(_)))
+    );
+    let e = validate(|v| v["extensions"] = serde_json::json!({":": {}}));
+    assert!(
+        e.iter()
+            .any(|e| matches!(e, ValidationError::ExtensionNamespace(_)))
+    );
 }

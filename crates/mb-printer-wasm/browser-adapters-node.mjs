@@ -32,6 +32,15 @@ mock = transport({kind:"unavailable"});
 assert.equal((await executePlan([wait("any-notification",1)],mock)).status,"completed");
 mock = transport({kind:"timeout"});
 assert.equal((await executePlan([wait("any-notification",5)],mock)).status,"outcome-unknown","timeout must not use unavailable fallback");
+mock = transport({kind:"timeout"});
+assert.equal((await executePlan([wait("brother-status32")],mock)).status,"completed","Brother timeout is a frozen best-effort preflight");
+mock = transport({kind:"unavailable"});
+assert.equal((await executePlan([wait("brother-status32")],mock)).status,"completed","Brother unavailable status matches native policy");
+
+const separated = {...transport(), payloadLimit:2, commandPayloadLimit:5};
+const splitRaster = {action:"raster-write",bytes:[1,2,3,4,5],logical_chunk:5,delay_after_each_physical_write_ms:0};
+assert.equal((await executePlan([command([1,2,3,4,5]),splitRaster],separated)).status,"completed");
+assert.deepEqual(separated.calls, [[1,2,3,4,5],[1,2],[3,4],[5]], "commands remain atomic while raster follows its physical limit");
 
 let controller = new AbortController(); controller.abort(); mock = transport();
 assert.equal((await executePlan([command([1])],mock,undefined,controller.signal)).status,"cancelled-before-send");

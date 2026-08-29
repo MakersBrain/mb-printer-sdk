@@ -14,6 +14,12 @@ const errors = JSON.parse(validateDocument(documentJson));
 const bytes = renderPacked(documentJson);
 ```
 
+`renderProtocolPlanWithOptions(documentJson, modelId, optionsJson)` accepts the
+strict camel-case protocol option object, including `copies`, `density`, feed,
+speed, offsets, TSPL media dimensions, and Brother cut/compression settings.
+Unknown option fields and unsafe zero copy/cut cadence values are rejected.
+`renderProtocolPlan` remains the deterministic default-options shorthand.
+
 CommonJS Node applications use the synchronous Node export:
 
 ```js
@@ -24,7 +30,9 @@ const errors = JSON.parse(sdk.validateDocument(documentJson));
 `@makersbrain/printer-sdk/adapters` exports thin `WebBluetoothTransport` and
 `WebUsbTransport` wrappers plus the transport-independent plan executor. Device
 discovery, permission prompts, opening, and interface claiming remain application
-responsibilities.
+responsibilities. WebUSB exposes independent atomic-command and physical-raster
+limits so a bulk endpoint can retain complete commands while chunking raster
+data to its qualified packet size.
 
 Within this repository, editor integration tests may use the stable generated
 entrypoint `mb-printer-sdk/crates/mb-printer-wasm/pkg/web/mb_printer_wasm.js`

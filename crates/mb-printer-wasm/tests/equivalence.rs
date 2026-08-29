@@ -20,6 +20,37 @@ fn wasm_facade_builds_a_rendered_protocol_plan() {
 }
 
 #[test]
+fn wasm_protocol_options_control_copies_density_and_reject_unknown_fields() {
+    let encoded = mb_printer_wasm::render_protocol_plan_with_options(
+        DOC,
+        "m03",
+        r#"{"copies":2,"density":8}"#,
+    )
+    .unwrap();
+    let plan: mb_printer_core::protocol::Plan = serde_json::from_str(&encoded).unwrap();
+    assert_eq!(
+        plan.actions
+            .iter()
+            .filter(|action| matches!(action, mb_printer_core::protocol::Action::CommandWrite { name, .. } if name == "ESC @ init"))
+            .count(),
+        2
+    );
+    assert!(plan.actions.iter().any(|action| matches!(
+        action,
+        mb_printer_core::protocol::Action::CommandWrite { name, bytes, .. }
+            if name == "GS | density" && bytes == &[0x1d, 0x7c, 8]
+    )));
+    assert!(
+        mb_printer_wasm::render_protocol_plan_with_options(
+            DOC,
+            "m03",
+            r#"{"copies":1,"retry":true}"#,
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn wasm_facade_infers_brother_62x29_media_and_printable_rows() {
     let input = DOC
         .replace("10000,\"height\":10000", "62000,\"height\":29000")

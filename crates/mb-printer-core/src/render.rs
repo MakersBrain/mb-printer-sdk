@@ -65,13 +65,10 @@ pub fn render(doc: &Document, options: RenderOptions) -> Result<MonoRaster, Rend
     let mut elements: Vec<_> = doc.elements.iter().collect();
     elements.sort_by_key(|e| common(e).z_order);
     for e in elements {
-        if common(e).visible {
-            draw(&mut canvas, e, doc.media.dpi, doc, None)?;
-            if let Some(source) = common(e)
-                .constraints
-                .as_ref()
-                .and_then(|c| c.zone.as_deref())
-            {
+        if effectively_visible(e, doc) {
+            let source = effective_zone(e, doc);
+            draw(&mut canvas, e, doc.media.dpi, doc, source)?;
+            if let Some(source) = source {
                 for zone in &doc.media.zones {
                     if zone.id != source && zone_clones(&doc.media.zones, &zone.id, source) {
                         draw(&mut canvas, e, doc.media.dpi, doc, Some(&zone.id))?
@@ -83,6 +80,43 @@ pub fn render(doc: &Document, options: RenderOptions) -> Result<MonoRaster, Rend
     canvas
         .dither(options.dither)
         .map_err(|_| RenderError::TooLarge)
+}
+fn effectively_visible(element: &Element, doc: &Document) -> bool {
+    if !common(element).visible {
+        return false;
+    }
+    let mut group = common(element).group_id.as_deref();
+    for _ in 0..doc.elements.len() {
+        let Some(parent) =
+            group.and_then(|id| doc.elements.iter().find(|item| common(item).id == id))
+        else {
+            return group.is_none();
+        };
+        if !common(parent).visible {
+            return false;
+        }
+        group = common(parent).group_id.as_deref();
+    }
+    group.is_none()
+}
+fn effective_zone<'a>(element: &'a Element, doc: &'a Document) -> Option<&'a str> {
+    let mut current = Some(element);
+    for _ in 0..=doc.elements.len() {
+        let item = current?;
+        if let Some(zone) = common(item)
+            .constraints
+            .as_ref()
+            .and_then(|constraints| constraints.zone.as_deref())
+        {
+            return Some(zone);
+        }
+        current = common(item).group_id.as_deref().and_then(|id| {
+            doc.elements
+                .iter()
+                .find(|candidate| common(candidate).id == id)
+        });
+    }
+    None
 }
 /// Render, apply model rotation/head alignment, and pack for protocol planning.
 pub fn render_for_printer(
@@ -643,7 +677,7 @@ struct TextLayout {
 }
 fn text_embedded(
     c: &mut GrayRaster,
-    layout: TextLayout,
+    mut layout: TextLayout,
     s: &str,
     bytes: &[u8],
 ) -> Result<(), RenderError> {
@@ -651,33 +685,118 @@ fn text_embedded(
         .ok_or_else(|| RenderError::Font("cannot parse OpenType face".into()))?;
     let font = fontdue::Font::from_bytes(bytes, fontdue::FontSettings::default())
         .map_err(|e| RenderError::Font(e.to_string()))?;
+    if matches!(layout.overflow, TextOverflow::ShrinkToFit) {
+        while layout.size > 1
+            && (embedded_advance(&face, s, layout.size) > layout.w || layout.size > layout.h)
+        {
+            layout.size -= 1;
+        }
+    }
+    let mut lines = if matches!(
+        layout.overflow,
+        TextOverflow::WordWrap | TextOverflow::AutoHeight
+    ) {
+        embedded_wrap(&face, s, layout.size, layout.w)
+    } else {
+        vec![s.to_owned()]
+    };
+    if !matches!(layout.overflow, TextOverflow::AutoHeight) {
+        lines.truncate((layout.h / layout.size.max(1)).max(1) as usize);
+    }
+    let total_height = lines.len() as i32 * layout.size;
+    let top = match layout.vertical {
+        VerticalAlign::Top => layout.y,
+        VerticalAlign::Middle => layout.y + (layout.h - total_height) / 2,
+        VerticalAlign::Bottom => layout.y + layout.h - total_height,
+    };
+    for (line_index, line) in lines.iter().enumerate() {
+        draw_embedded_line(
+            c,
+            layout,
+            &face,
+            &font,
+            line,
+            top + line_index as i32 * layout.size + layout.size,
+        );
+    }
+    Ok(())
+}
+fn embedded_advance(face: &rustybuzz::Face<'_>, text: &str, size: i32) -> i32 {
     let mut buffer = rustybuzz::UnicodeBuffer::new();
-    buffer.push_str(s);
-    let shaped = rustybuzz::shape(&face, &[], buffer);
-    let scale = layout.size as f32 / face.units_per_em() as f32;
-    let advance = shaped
+    buffer.push_str(text);
+    let shaped = rustybuzz::shape(face, &[], buffer);
+    let advance: i64 = shaped
         .glyph_positions()
         .iter()
-        .map(|p| p.x_advance as f32 * scale)
-        .sum::<f32>()
-        .round() as i32;
-    let mut pen_x = match layout.horizontal {
+        .map(|position| i64::from(position.x_advance))
+        .sum();
+    round_ratio(
+        i128::from(advance) * i128::from(size),
+        i128::from(face.units_per_em()),
+    ) as i32
+}
+fn embedded_wrap(face: &rustybuzz::Face<'_>, text: &str, size: i32, width: i32) -> Vec<String> {
+    let mut lines = Vec::new();
+    for paragraph in text.split('\n') {
+        let mut line = String::new();
+        for word in paragraph.split_whitespace() {
+            let candidate = if line.is_empty() {
+                word.to_owned()
+            } else {
+                format!("{line} {word}")
+            };
+            if embedded_advance(face, &candidate, size) <= width {
+                line = candidate;
+                continue;
+            }
+            if !line.is_empty() {
+                lines.push(std::mem::take(&mut line));
+            }
+            for character in word.chars() {
+                let candidate = format!("{line}{character}");
+                if !line.is_empty() && embedded_advance(face, &candidate, size) > width {
+                    lines.push(std::mem::take(&mut line));
+                }
+                line.push(character);
+            }
+        }
+        lines.push(std::mem::take(&mut line));
+    }
+    if lines.is_empty() {
+        vec![String::new()]
+    } else {
+        lines
+    }
+}
+fn draw_embedded_line(
+    canvas: &mut GrayRaster,
+    layout: TextLayout,
+    face: &rustybuzz::Face<'_>,
+    font: &fontdue::Font,
+    text: &str,
+    baseline: i32,
+) {
+    let mut buffer = rustybuzz::UnicodeBuffer::new();
+    buffer.push_str(text);
+    let shaped = rustybuzz::shape(face, &[], buffer);
+    let advance = embedded_advance(face, text, layout.size);
+    let mut pen_units = 0i64;
+    let origin = match layout.horizontal {
         HorizontalAlign::Left => layout.x,
         HorizontalAlign::Center => layout.x + (layout.w - advance) / 2,
         HorizontalAlign::Right => layout.x + layout.w - advance,
     };
-    let baseline = match layout.vertical {
-        VerticalAlign::Top => layout.y + layout.size,
-        VerticalAlign::Middle => layout.y + (layout.h + layout.size) / 2,
-        VerticalAlign::Bottom => layout.y + layout.h,
-    };
-    for (info, pos) in shaped.glyph_infos().iter().zip(shaped.glyph_positions()) {
+    for (info, position) in shaped.glyph_infos().iter().zip(shaped.glyph_positions()) {
+        let scale = |units: i64| {
+            round_ratio(
+                i128::from(units) * i128::from(layout.size),
+                i128::from(face.units_per_em()),
+            ) as i32
+        };
         let (metrics, bitmap) = font.rasterize_indexed(info.glyph_id as u16, layout.size as f32);
-        let gx = pen_x + (pos.x_offset as f32 * scale).round() as i32 + metrics.xmin;
-        let gy = baseline
-            - (pos.y_offset as f32 * scale).round() as i32
-            - metrics.height as i32
-            - metrics.ymin;
+        let gx = origin + scale(pen_units + i64::from(position.x_offset)) + metrics.xmin;
+        let gy =
+            baseline - scale(i64::from(position.y_offset)) - metrics.height as i32 - metrics.ymin;
         for yy in 0..metrics.height {
             for xx in 0..metrics.width {
                 let px = gx + xx as i32;
@@ -690,19 +809,13 @@ fn text_embedded(
                 {
                     let alpha = bitmap[yy * metrics.width + xx];
                     if alpha > 0 {
-                        set(c, px, py, 255 - alpha)
+                        set(canvas, px, py, 255 - alpha)
                     }
                 }
             }
         }
-        pen_x += (pos.x_advance as f32 * scale).round() as i32;
-        if pen_x >= layout.x + layout.w
-            && matches!(layout.overflow, TextOverflow::Clip | TextOverflow::NoWrap)
-        {
-            break;
-        }
+        pen_units += i64::from(position.x_advance);
     }
-    Ok(())
 }
 fn text(c: &mut GrayRaster, layout: TextLayout, s: &str) {
     let TextLayout {

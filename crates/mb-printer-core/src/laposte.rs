@@ -35,6 +35,8 @@ pub enum ExtractError {
         width_um: i64,
         height_um: i64,
     },
+    #[error("source page provenance must be one-based")]
+    PageNumber,
     #[error("normalized page raster is invalid")]
     Raster,
     #[error("no occupied stamps found")]
@@ -75,6 +77,9 @@ pub fn extract(pages: &[NormalizedPage], code: &str) -> Result<Vec<Stamp>, Extra
     let fmt = format(code).ok_or_else(|| ExtractError::Format(code.into()))?;
     let mut out = Vec::new();
     for p in pages {
+        if p.page == 0 {
+            return Err(ExtractError::PageNumber);
+        }
         p.raster.validate().map_err(|_| ExtractError::Raster)?;
         if (p.width_um - 210_000).abs() > 1500 || (p.height_um - 297_000).abs() > 1500 {
             return Err(ExtractError::NotA4 {

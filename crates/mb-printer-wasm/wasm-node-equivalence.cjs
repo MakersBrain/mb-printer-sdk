@@ -25,6 +25,11 @@ for (const test of templateCorpus.cases) {
 }
 const plan = JSON.parse(wasm.renderProtocolPlan(documentJson, "m03"));
 if (plan.protocol !== "m-series" || plan.actions.length === 0) throw new Error("WASM plan diverged");
+const optionPlan = JSON.parse(wasm.renderProtocolPlanWithOptions(documentJson, "m03", JSON.stringify({copies:2,density:8})));
+if (optionPlan.actions.filter(action => action.action === "command-write" && action.name === "ESC @ init").length !== 2) throw new Error("WASM copies option diverged");
+if (!optionPlan.actions.some(action => action.action === "command-write" && action.name === "GS | density" && action.bytes.join() === "29,124,8")) throw new Error("WASM density option diverged");
+const invalidName = structuredClone(fixture.document); invalidName.name = "";
+if (wasm.validateDocument(JSON.stringify(invalidName)) === "[]") throw new Error("WASM accepted empty document name");
 if (!Buffer.from(wasm.renderPng(documentJson)).subarray(0, 8).equals(Buffer.from("89504e470d0a1a0a", "hex"))) throw new Error("WASM PNG diverged");
 if (!Buffer.from(wasm.renderPdf(documentJson)).subarray(0, 8).equals(Buffer.from("%PDF-1.4"))) throw new Error("WASM PDF diverged");
 const batchPdf = wasm.renderBatchPdf(JSON.stringify([fixture.document, fixture.document]));

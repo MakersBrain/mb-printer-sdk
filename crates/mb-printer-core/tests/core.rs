@@ -219,3 +219,36 @@ fn non_tspl_copies_repeat_the_complete_flow() {
         2
     )
 }
+
+#[test]
+fn protocol_rejects_zero_copy_and_cut_cadence() {
+    let printer = capabilities::by_id("m03").unwrap();
+    let raster = protocol::Raster {
+        width_bytes: 1,
+        height: 1,
+        data: vec![0],
+    };
+    assert_eq!(
+        protocol::plan(
+            &printer,
+            &raster,
+            &protocol::Options {
+                copies: 0,
+                ..Default::default()
+            }
+        ),
+        Err(protocol::PlanError::Range("copies"))
+    );
+    assert_eq!(
+        protocol::plan(
+            &printer,
+            &raster,
+            &protocol::Options {
+                cut: true,
+                cut_every: 0,
+                ..Default::default()
+            }
+        ),
+        Err(protocol::PlanError::Range("cut every"))
+    );
+}

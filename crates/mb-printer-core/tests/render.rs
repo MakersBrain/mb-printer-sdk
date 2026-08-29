@@ -15,6 +15,7 @@ const DOC: &str = r#"{
   {"type":"qr-code","id":"qr","transform":{"x":31000,"y":4000,"width":15000,"height":15000},"zOrder":3,"data":"makersbrain:42","errorCorrection":"M"}
  ],"resources":[],"fields":[],"extensions":{}
 }"#;
+const DEMO_FONT: &str = "AAEAAAAHAEAAAgAwY21hcAAJAHYAAAEAAAAALGdseWbxy2aYAAABNAAAAFxoZWFk8jXd+AAAAHwAAAA2aGhlYQZhAMoAAAC0AAAAJGhtdHgEdABqAAAA+AAAAAhsb2NhAC4AFAAAASwAAAAGbWF4cAAFAAsAAADYAAAAIAABAAAAAQAA9ZwpRF8PPPUAAgPoAAAAALSS9AAAAAAA3C+mXAAGAAACWAK8AAAAAwACAAAAAAAAAAEAAAQA/nAAAAJYAAb//wJYAAEAAAAAAAAAAAAAAAAAAAACAAEAAAACAAsAAgAAAAAAAAAAAAAAAAAAAAAAAAAAAAACWABkAhwABgAAAAEAAAADAAAADAAEACAAAAAEAAQAAQAAAEH//wAAAEH////AAAEAAAAAAAAAFAAuAAAAAgBkAAACWAK8AAMABwAAMxEhESUhESFkAfT+NAGk/lwCvP1EKAJsAAIABgAAAh0CkAACAAoAABMzAwETMxMjJyMHrcRj/vjaYN1ZPu9CAQsBQP21ApD9cMjIAA==";
 #[test]
 fn fixed_point_rounding_is_explicit() {
     assert_eq!(render::micrometres_to_dots(12_700, 203), 102);
@@ -103,17 +104,55 @@ fn physical_pdf_uses_authoritative_media_geometry() {
 #[test]
 fn embedded_ttf_is_shaped_and_rasterized_deterministically() {
     // ttf-parser's AGPL-compatible 400-byte demo font, embedded to keep the test hermetic.
-    let data = "AAEAAAAHAEAAAgAwY21hcAAJAHYAAAEAAAAALGdseWbxy2aYAAABNAAAAFxoZWFk8jXd+AAAAHwAAAA2aGhlYQZhAMoAAAC0AAAAJGhtdHgEdABqAAAA+AAAAAhsb2NhAC4AFAAAASwAAAAGbWF4cAAFAAsAAADYAAAAIAABAAAAAQAA9ZwpRF8PPPUAAgPoAAAAALSS9AAAAAAA3C+mXAAGAAACWAK8AAAAAwACAAAAAAAAAAEAAAQA/nAAAAJYAAb//wJYAAEAAAAAAAAAAAAAAAAAAAACAAEAAAACAAsAAgAAAAAAAAAAAAAAAAAAAAAAAAAAAAACWABkAhwABgAAAAEAAAADAAAADAAEACAAAAAEAAQAAQAAAEH//wAAAEH////AAAEAAAAAAAAAFAAuAAAAAgBkAAACWAK8AAMABwAAMxEhESUhESFkAfT+NAGk/lwCvP1EKAJsAAIABgAAAh0CkAACAAoAABMzAwETMxMjJyMHrcRj/vjaYN1ZPu9CAQsBQP21ApD9cMjIAA==";
     let source = DOC
         .replace("\"text\":\"MB 42\",", "\"text\":\"A\",\"fontResource\":\"demo-font\",")
         .replace(
             "\"resources\":[]",
-            &format!("\"resources\":[{{\"id\":\"demo-font\",\"mediaType\":\"font/ttf\",\"sha256\":\"cb40a3b0aed56dbd2465355ff5ac53ea5e6b567877132844d8f780fd600bdade\",\"dataBase64\":\"{data}\"}}]"),
+            &format!("\"resources\":[{{\"id\":\"demo-font\",\"mediaType\":\"font/ttf\",\"sha256\":\"cb40a3b0aed56dbd2465355ff5ac53ea5e6b567877132844d8f780fd600bdade\",\"dataBase64\":\"{DEMO_FONT}\"}}]"),
         );
     let document = Document::from_json(&source).unwrap();
     let first = render::render(&document, Default::default()).unwrap();
     let second = render::render(&document, Default::default()).unwrap();
     assert_eq!(first, second);
+}
+#[test]
+fn embedded_fonts_implement_every_overflow_mode() {
+    let base = DOC
+        .replace(
+            "\"text\":\"MB 42\",",
+            "\"text\":\"A A A A\",\"fontResource\":\"demo-font\",",
+        )
+        .replace("\"width\":18000,\"height\":6000", "\"width\":5000,\"height\":6000")
+        .replace(
+            "\"resources\":[]",
+            &format!("\"resources\":[{{\"id\":\"demo-font\",\"mediaType\":\"font/ttf\",\"sha256\":\"cb40a3b0aed56dbd2465355ff5ac53ea5e6b567877132844d8f780fd600bdade\",\"dataBase64\":\"{DEMO_FONT}\"}}]"),
+        );
+    let mut rendered = Vec::new();
+    for mode in [
+        "no-wrap",
+        "word-wrap",
+        "clip",
+        "shrink-to-fit",
+        "auto-height",
+    ] {
+        let source = base.replace("\"overflow\":\"clip\"", &format!("\"overflow\":\"{mode}\""));
+        let document = Document::from_json(&source).unwrap();
+        let first = render::render(&document, Default::default()).unwrap();
+        assert_eq!(
+            first,
+            render::render(&document, Default::default()).unwrap()
+        );
+        rendered.push(first);
+    }
+    assert_ne!(rendered[0], rendered[1], "word wrapping must change layout");
+    assert_ne!(
+        rendered[2], rendered[3],
+        "shrink-to-fit must change glyph size"
+    );
+    assert_ne!(
+        rendered[2], rendered[4],
+        "auto-height must retain wrapped lines"
+    );
 }
 #[test]
 fn cloned_zones_repeat_source_zone_elements() {
@@ -126,6 +165,26 @@ fn cloned_zones_repeat_source_zone_elements() {
     }"#;
     let document = Document::from_json(source).unwrap();
     let raster = render::render(&document, Default::default()).unwrap();
+    assert_eq!(raster.pixels[20 * raster.width as usize + 20], 1);
+    assert_eq!(raster.pixels[20 * raster.width as usize + 120], 1);
+}
+#[test]
+fn group_visibility_and_zone_constraints_apply_to_children() {
+    let hidden = rotation_document(
+        r#"{"type":"group","id":"group","transform":{"x":0,"y":0,"width":10000,"height":10000},"zOrder":0,"visible":false,"children":["mark"]},{"type":"rectangle","id":"mark","transform":{"x":1000,"y":1000,"width":3000,"height":3000},"zOrder":1,"groupId":"group","strokeWidth":100,"fill":true}"#,
+    );
+    assert!(
+        !render::render(&hidden, Default::default())
+            .unwrap()
+            .pixels
+            .contains(&1)
+    );
+
+    let zoned = Document::from_json(
+        r#"{"version":4,"name":"group zone","media":{"width":20000,"height":10000,"unit":"micrometre","dpi":254,"orientation":"landscape","printableBounds":{"x":0,"y":0,"width":20000,"height":10000},"shape":"rectangle","zones":[{"id":"source","bounds":{"x":0,"y":0,"width":10000,"height":10000}},{"id":"copy","bounds":{"x":10000,"y":0,"width":10000,"height":10000},"cloneOf":"source"}]},"coordinateSystem":{"unit":"micrometre","origin":"top-left","rounding":"half-away-from-zero"},"elements":[{"type":"group","id":"group","transform":{"x":0,"y":0,"width":10000,"height":10000},"zOrder":0,"constraints":{"zone":"source"},"children":["mark"]},{"type":"rectangle","id":"mark","transform":{"x":1000,"y":1000,"width":3000,"height":3000},"zOrder":1,"groupId":"group","strokeWidth":100,"fill":true}],"resources":[],"fields":[],"extensions":{}}"#,
+    )
+    .unwrap();
+    let raster = render::render(&zoned, Default::default()).unwrap();
     assert_eq!(raster.pixels[20 * raster.width as usize + 20], 1);
     assert_eq!(raster.pixels[20 * raster.width as usize + 120], 1);
 }

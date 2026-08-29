@@ -54,7 +54,8 @@ pub struct Raster {
     pub height: u32,
     pub data: Vec<u8>,
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct Options {
     pub density: u8,
     pub feed: u8,
@@ -73,7 +74,8 @@ pub struct Options {
     pub compress: bool,
     pub high_quality: bool,
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BrotherMedia {
     pub width_mm: u8,
     pub length_mm: u8,
@@ -116,6 +118,12 @@ pub fn plan(printer: &PrinterDefinition, r: &Raster, o: &Options) -> Result<Plan
     }
     if !(1..=8).contains(&o.density) {
         return Err(PlanError::Range("density"));
+    }
+    if o.copies == 0 {
+        return Err(PlanError::Range("copies"));
+    }
+    if o.cut && o.cut_every == 0 {
+        return Err(PlanError::Range("cut every"));
     }
     if printer.protocol != Protocol::Tspl && o.copies > 1 {
         let mut single = o.clone();

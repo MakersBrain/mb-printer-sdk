@@ -23,6 +23,9 @@ try {
   }
   const packed = [...wasm.renderPacked(documentJson)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
   if (packed !== fixture.expectedPackedHex) throw new Error("render bytes");
+  const optionPlan = JSON.parse(wasm.renderProtocolPlanWithOptions(documentJson, "m03", JSON.stringify({copies:2,density:8})));
+  if (optionPlan.actions.filter(action => action.action === "command-write" && action.name === "ESC @ init").length !== 2) throw new Error("protocol copies option");
+  if (!optionPlan.actions.some(action => action.action === "command-write" && action.name === "GS | density" && action.bytes.join() === "29,124,8")) throw new Error("protocol density option");
   const pdf = wasm.renderBatchPdf(JSON.stringify([fixture.document, fixture.document]));
   const pages = JSON.parse(wasm.normalizePdf(pdf, 254, false));
   if (pages.length !== 2 || pages[0].rasterWidth !== 80 || pages[0].sourcePage !== 1 || pages[1].sourcePage !== 2) throw new Error("multipage PDF provenance");
@@ -63,6 +66,11 @@ try {
   const invalidBrother = {...mock,async waitForResponse(){return {kind:"response",bytes:new Uint8Array(32)}}};
   const invalidStatus = await adapters.executePlan([{action:"wait-for-response",timeout_ms:1,fallback_delay_ms:0,validation:"brother-status32"}],invalidBrother);
   if (invalidStatus.status !== "outcome-unknown") throw new Error("Brother response validation");
+  const absentBrother = {...mock,async waitForResponse(){return {kind:"timeout"}}};
+  if ((await adapters.executePlan([{action:"wait-for-response",timeout_ms:1,fallback_delay_ms:0,validation:"brother-status32"}],absentBrother)).status !== "completed") throw new Error("Brother best-effort timeout policy");
+  const independentLimits = {...mock,payloadLimit:2,commandPayloadLimit:5,calls:[],async write(value,_signal,kind){this.calls.push([kind,...value])}};
+  const independent = await adapters.executePlan([{action:"command-write",name:"atomic",bytes:[1,2,3,4,5],atomic:true},{action:"raster-write",bytes:[6,7,8,9,10],logical_chunk:5,delay_after_each_physical_write_ms:0}],independentLimits);
+  if (independent.status !== "completed" || JSON.stringify(independentLimits.calls) !== JSON.stringify([["command",1,2,3,4,5],["raster",6,7],["raster",8,9],["raster",10]])) throw new Error("independent command/raster limits");
   result.textContent = "MB_WASM_BROWSER_PASS";
 } catch (error) {
   result.textContent = `MB_WASM_BROWSER_FAIL: ${error?.stack ?? error}`;

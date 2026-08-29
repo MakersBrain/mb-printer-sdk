@@ -262,6 +262,8 @@ impl Resource {
 pub enum ValidationError {
     #[error("document version must be 4")]
     Version,
+    #[error("document name must not be empty")]
+    Name,
     #[error("media dimensions, DPI and printable bounds must be positive and contained")]
     Media,
     #[error("duplicate or empty identifier: {0}")]
@@ -297,6 +299,9 @@ impl Document {
         if self.version != 4 {
             e.push(ValidationError::Version)
         };
+        if self.name.is_empty() {
+            e.push(ValidationError::Name)
+        }
         let b = self.media.printable_bounds;
         if self.media.width <= 0
             || self.media.height <= 0
@@ -318,10 +323,18 @@ impl Document {
             if r.id.is_empty() || !ids.insert(r.id.clone()) {
                 e.push(ValidationError::DuplicateId(r.id.clone()))
             };
+            if r.sha256.len() != 64
+                || !r
+                    .sha256
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            {
+                e.push(ValidationError::ResourceHash(r.id.clone()))
+            }
             match decode_base64(&r.data_base64) {
                 Some(bytes) => {
                     let actual = format!("{:x}", Sha256::digest(bytes));
-                    if actual != r.sha256.to_ascii_lowercase() {
+                    if actual != r.sha256 {
                         e.push(ValidationError::ResourceHash(r.id.clone()))
                     }
                 }
@@ -394,6 +407,9 @@ impl Document {
             if c.transform.width <= 0 || c.transform.height <= 0 {
                 e.push(ValidationError::Geometry(c.id.clone()))
             };
+            if !(-360_000..=360_000).contains(&c.transform.rotation_millidegrees) {
+                e.push(ValidationError::Element(c.id.clone()))
+            }
             for id in x.resource_ids() {
                 if !resources.contains(id) {
                     e.push(ValidationError::MissingResource(id.into()))
@@ -404,6 +420,18 @@ impl Document {
             {
                 e.push(ValidationError::Reference(format!(
                     "{} has missing/non-group parent {group}",
+                    c.id
+                )))
+            }
+            if let Some(group) = &c.group_id
+                && let Some(Element::Group { children, .. }) = self
+                    .elements
+                    .iter()
+                    .find(|element| element.common().id == *group)
+                && !children.contains(&c.id)
+            {
+                e.push(ValidationError::Reference(format!(
+                    "{} names parent {group}, but is absent from its children",
                     c.id
                 )))
             }
@@ -499,7 +527,15 @@ impl Document {
             }
         }
         for k in self.extensions.keys() {
-            if !k.contains(':') {
+            let valid_part = |part: &str| {
+                !part.is_empty()
+                    && part.bytes().all(|byte| {
+                        byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-')
+                    })
+            };
+            if k.split_once(':')
+                .is_none_or(|(namespace, name)| !valid_part(namespace) || !valid_part(name))
+            {
                 e.push(ValidationError::ExtensionNamespace(k.clone()))
             }
         }

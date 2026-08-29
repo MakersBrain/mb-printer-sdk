@@ -155,11 +155,38 @@ pub fn extract_laposte_pdf_json(code: &str, bytes: Vec<u8>, dpi: u16) -> Result<
     serde_json::to_string(&values).map_err(|e| e.to_string())
 }
 pub fn render_protocol_plan(input: &str, model: &str) -> Result<String, String> {
+    render_protocol_plan_with_options(input, model, "{}")
+}
+pub fn render_protocol_plan_with_options(
+    input: &str,
+    model: &str,
+    options_json: &str,
+) -> Result<String, String> {
     let doc = Document::from_json(input).map_err(|e| e.to_string())?;
+    doc.validate().map_err(|errors| {
+        errors
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("; ")
+    })?;
     let printer = capabilities::by_id(model).ok_or_else(|| format!("unknown model: {model}"))?;
     let raster = render::render_for_printer(&doc, &printer, Default::default())
         .map_err(|e| e.to_string())?;
-    let mut options = protocol::Options::default();
+    let mut options: protocol::Options =
+        serde_json::from_str(options_json).map_err(|e| e.to_string())?;
+    if printer.protocol == capabilities::Protocol::Tspl {
+        let tenths_mm = |value: i64| {
+            u16::try_from(value.saturating_add(50) / 100)
+                .map_err(|_| "TSPL media dimension is outside range".to_owned())
+        };
+        if options.label_width_tenths_mm.is_none() {
+            options.label_width_tenths_mm = Some(tenths_mm(doc.media.width)?);
+        }
+        if options.label_height_tenths_mm.is_none() {
+            options.label_height_tenths_mm = Some(tenths_mm(doc.media.height)?);
+        }
+    }
     if printer.protocol == capabilities::Protocol::Brother {
         let brother_62x29 = (doc.media.width.abs_diff(62_000) <= 1_500
             && doc.media.height.abs_diff(29_000) <= 1_500)
@@ -170,22 +197,24 @@ pub fn render_protocol_plan(input: &str, model: &str) -> Result<String, String> 
                 .map_err(|_| "Brother media dimension is outside range".to_owned())
         };
         options.continuous = doc.media.continuous;
-        options.brother_media = Some(protocol::BrotherMedia {
-            width_mm: if brother_62x29 {
-                62
-            } else {
-                millimetres(doc.media.width)?
-            },
-            length_mm: if doc.media.continuous {
-                0
-            } else if brother_62x29 {
-                29
-            } else {
-                millimetres(doc.media.height)?
-            },
-            continuous: doc.media.continuous,
-            feed_margin: 0,
-        });
+        if options.brother_media.is_none() {
+            options.brother_media = Some(protocol::BrotherMedia {
+                width_mm: if brother_62x29 {
+                    62
+                } else {
+                    millimetres(doc.media.width)?
+                },
+                length_mm: if doc.media.continuous {
+                    0
+                } else if brother_62x29 {
+                    29
+                } else {
+                    millimetres(doc.media.height)?
+                },
+                continuous: doc.media.continuous,
+                feed_margin: 0,
+            });
+        }
     }
     let plan = protocol::plan(&printer, &raster, &options).map_err(|e| e.to_string())?;
     serde_json::to_string(&plan).map_err(|e| e.to_string())
@@ -281,5 +310,14 @@ mod bindings {
     #[wasm_bindgen(js_name=renderProtocolPlan)]
     pub fn render_protocol_plan(input: &str, model: &str) -> Result<String, JsValue> {
         super::render_protocol_plan(input, model).map_err(|e| JsValue::from_str(&e))
+    }
+    #[wasm_bindgen(js_name=renderProtocolPlanWithOptions)]
+    pub fn render_protocol_plan_with_options(
+        input: &str,
+        model: &str,
+        options_json: &str,
+    ) -> Result<String, JsValue> {
+        super::render_protocol_plan_with_options(input, model, options_json)
+            .map_err(|e| JsValue::from_str(&e))
     }
 }
