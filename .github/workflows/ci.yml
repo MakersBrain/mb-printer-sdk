@@ -14,6 +14,7 @@ jobs:
         with:
           toolchain: 1.92.0
           targets: wasm32-unknown-unknown
+          components: rustfmt
           components: rustfmt, clippy
       - run: cargo fmt --all --check
       - run: python3 scripts/generate_schema_projection.py --check

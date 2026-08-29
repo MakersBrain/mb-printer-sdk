@@ -8,7 +8,11 @@ file_version=$(tr -d '\r\n' <"$sdk_root/VERSION")
 test -n "$version"
 test "$version" = "$npm_version"
 test "$version" = "$file_version"
-if [ -n "${GITHUB_REF_NAME:-}" ]; then
-  test "${GITHUB_REF_NAME#v}" = "$version"
+tag=${1:-}
+if [ -n "$tag" ]; then
+  test "$tag" = "v$version" || {
+    echo "tag $tag does not match package version v$version" >&2
+    exit 1
+  }
 fi
 echo "release version $version is consistent"
