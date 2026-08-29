@@ -13,7 +13,7 @@ documentation = "https://docs.rs/mb-printer-core"
 readme = "README.md"
 keywords = ["thermal-printer", "label", "wasm", "pdf"]
 categories = ["graphics", "encoding"]
-include = ["src/**", "tests/**", "data/**", "schema/**", "fixtures/**", "Cargo.toml", "README.md", "LICENSE"]
+include = ["/src/**", "/tests/**", "/data/**", "/schema/**", "/fixtures/**", "/Cargo.toml", "/README.md", "/LICENSE"]
 
 [dependencies]
 serde.workspace = true

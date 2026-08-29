@@ -13,7 +13,7 @@ documentation = "https://docs.rs/mb-printer-wasm"
 readme = "README.md"
 keywords = ["thermal-printer", "label", "wasm", "webassembly"]
 categories = ["wasm", "graphics"]
-include = ["src/**", "tests/**", "Cargo.toml", "README.md", "LICENSE"]
+include = ["/src/**", "/tests/**", "/Cargo.toml", "/README.md", "/LICENSE"]
 [lib]
 crate-type = ["cdylib", "rlib"]
 [dependencies]

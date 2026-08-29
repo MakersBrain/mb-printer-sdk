@@ -13,7 +13,7 @@ documentation = "https://docs.rs/mb-printer-native"
 readme = "README.md"
 keywords = ["thermal-printer", "label", "transport"]
 categories = ["hardware-support"]
-include = ["src/**", "tests/**", "Cargo.toml", "README.md", "LICENSE"]
+include = ["/src/**", "/tests/**", "/Cargo.toml", "/README.md", "/LICENSE"]
 [dependencies]
 mb-printer-core = { version = "=0.1.0", path = "../mb-printer-core" }
 thiserror.workspace = true
