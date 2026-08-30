@@ -682,6 +682,7 @@ pub mod ble {
     use std::pin::Pin;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc::{self, Receiver};
+    use tracing::Instrument as _;
     pub trait BleGattBackend {
         fn subscribe(&mut self) -> Result<bool, String>;
         fn write_without_response(&mut self, bytes: &[u8]) -> Result<(), String>;
@@ -935,13 +936,16 @@ pub mod ble {
                 Ok::<_, String>((peripheral, write, notify, stream))
             })?;
             let (tx, rx) = mpsc::channel();
-            runtime.spawn(async move {
-                while let Some(notification) = stream.next().await {
-                    if tx.send(notification.value).is_err() {
-                        break;
+            runtime.spawn(
+                async move {
+                    while let Some(notification) = stream.next().await {
+                        if tx.send(notification.value).is_err() {
+                            break;
+                        }
                     }
                 }
-            });
+                .instrument(tracing::Span::current()),
+            );
             Ok(Self {
                 runtime,
                 peripheral,
@@ -1087,13 +1091,16 @@ pub mod ble {
                 .await
                 .map_err(|error| error.to_string())?;
             let (sender, notifications) = tokio::sync::mpsc::channel(32);
-            tokio::spawn(async move {
-                while let Some(notification) = stream.next().await {
-                    if sender.send(notification.value).await.is_err() {
-                        break;
+            tokio::spawn(
+                async move {
+                    while let Some(notification) = stream.next().await {
+                        if sender.send(notification.value).await.is_err() {
+                            break;
+                        }
                     }
                 }
-            });
+                .instrument(tracing::Span::current()),
+            );
             Ok(Self {
                 peripheral,
                 write,

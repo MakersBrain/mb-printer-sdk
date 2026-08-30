@@ -42,9 +42,40 @@ pub enum RasterError {
     Length,
     #[error("head width must be positive")]
     HeadWidth,
+    #[error("raster dimensions overflow or exceed the configured limit")]
+    Dimensions,
+    #[error("raster placement is outside the destination")]
+    Placement,
+}
+
+fn checked_pixel_len(width: u32, height: u32, max_pixels: u64) -> Result<usize, RasterError> {
+    if width == 0 || height == 0 {
+        return Err(RasterError::Dimensions);
+    }
+    let pixels = u64::from(width)
+        .checked_mul(u64::from(height))
+        .ok_or(RasterError::Dimensions)?;
+    if pixels > max_pixels {
+        return Err(RasterError::Dimensions);
+    }
+    usize::try_from(pixels).map_err(|_| RasterError::Dimensions)
 }
 
 impl GrayRaster {
+    pub fn try_new(
+        width: u32,
+        height: u32,
+        white: u8,
+        max_pixels: u64,
+    ) -> Result<Self, RasterError> {
+        let len = checked_pixel_len(width, height, max_pixels)?;
+        Ok(Self {
+            width,
+            height,
+            pixels: vec![white; len],
+        })
+    }
+
     pub fn new(width: u32, height: u32, white: u8) -> Self {
         Self {
             width,
@@ -53,7 +84,8 @@ impl GrayRaster {
         }
     }
     pub fn validate(&self) -> Result<(), RasterError> {
-        if self.pixels.len() == self.width as usize * self.height as usize {
+        let expected = checked_pixel_len(self.width, self.height, u64::MAX)?;
+        if self.pixels.len() == expected {
             Ok(())
         } else {
             Err(RasterError::Length)
@@ -144,10 +176,46 @@ fn ordered<const N: usize>(r: &GrayRaster, out: &mut [u8], m: &[[u8; N]; N], lev
     }
 }
 impl MonoRaster {
+    pub fn try_new(width: u32, height: u32, max_pixels: u64) -> Result<Self, RasterError> {
+        let len = checked_pixel_len(width, height, max_pixels)?;
+        Ok(Self {
+            width,
+            height,
+            pixels: vec![0; len],
+        })
+    }
+
+    /// Copy a complete source raster at a non-negative destination origin.
+    pub fn blit(&mut self, source: &Self, x: u32, y: u32) -> Result<(), RasterError> {
+        self.validate()?;
+        source.validate()?;
+        let right = x.checked_add(source.width).ok_or(RasterError::Placement)?;
+        let bottom = y.checked_add(source.height).ok_or(RasterError::Placement)?;
+        if right > self.width || bottom > self.height {
+            return Err(RasterError::Placement);
+        }
+        let source_width = usize::try_from(source.width).map_err(|_| RasterError::Dimensions)?;
+        let destination_width = usize::try_from(self.width).map_err(|_| RasterError::Dimensions)?;
+        let x = usize::try_from(x).map_err(|_| RasterError::Dimensions)?;
+        for row in 0..usize::try_from(source.height).map_err(|_| RasterError::Dimensions)? {
+            let source_start = row
+                .checked_mul(source_width)
+                .ok_or(RasterError::Dimensions)?;
+            let destination_start = usize::try_from(y)
+                .map_err(|_| RasterError::Dimensions)?
+                .checked_add(row)
+                .and_then(|value| value.checked_mul(destination_width))
+                .and_then(|value| value.checked_add(x))
+                .ok_or(RasterError::Dimensions)?;
+            self.pixels[destination_start..destination_start + source_width]
+                .copy_from_slice(&source.pixels[source_start..source_start + source_width]);
+        }
+        Ok(())
+    }
+
     pub fn validate(&self) -> Result<(), RasterError> {
-        if self.pixels.len() == self.width as usize * self.height as usize
-            && self.pixels.iter().all(|&x| x <= 1)
-        {
+        let expected = checked_pixel_len(self.width, self.height, u64::MAX)?;
+        if self.pixels.len() == expected && self.pixels.iter().all(|&x| x <= 1) {
             Ok(())
         } else {
             Err(RasterError::Length)
@@ -282,5 +350,73 @@ impl MonoRaster {
             }
         }
         Ok(out)
+    }
+}
+
+/// Validated one-bit rows, most-significant bit first, with black bits set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackedMonoRaster {
+    width: u32,
+    height: u32,
+    stride: u32,
+    bytes: Vec<u8>,
+}
+
+impl PackedMonoRaster {
+    pub fn try_new(
+        width: u32,
+        height: u32,
+        bytes: Vec<u8>,
+        max_pixels: u64,
+    ) -> Result<Self, RasterError> {
+        checked_pixel_len(width, height, max_pixels)?;
+        let stride = width.checked_add(7).ok_or(RasterError::Dimensions)? / 8;
+        let expected = u64::from(stride)
+            .checked_mul(u64::from(height))
+            .and_then(|value| usize::try_from(value).ok())
+            .ok_or(RasterError::Dimensions)?;
+        if bytes.len() != expected {
+            return Err(RasterError::Length);
+        }
+        Ok(Self {
+            width,
+            height,
+            stride,
+            bytes,
+        })
+    }
+
+    pub fn from_mono(raster: &MonoRaster, max_pixels: u64) -> Result<Self, RasterError> {
+        Self::try_new(raster.width, raster.height, raster.pack_msb()?, max_pixels)
+    }
+
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+
+    pub fn height(&self) -> u32 {
+        self.height
+    }
+
+    pub fn stride(&self) -> u32 {
+        self.stride
+    }
+
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    pub fn validate(&self) -> Result<(), RasterError> {
+        checked_pixel_len(self.width, self.height, u64::MAX)?;
+        let stride = self.width.checked_add(7).ok_or(RasterError::Dimensions)? / 8;
+        let expected = u64::from(stride)
+            .checked_mul(u64::from(self.height))
+            .and_then(|value| usize::try_from(value).ok())
+            .ok_or(RasterError::Dimensions)?;
+        if self.stride == stride && self.bytes.len() == expected {
+            Ok(())
+        } else {
+            Err(RasterError::Length)
+        }
     }
 }

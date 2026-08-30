@@ -1,37 +1,249 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #![forbid(unsafe_code)]
 use mb_printer_core::{
-    Document, capabilities, export, importer, media, pdf_import, protocol, render, template,
+    Document, capabilities, export, importer, materialize, media, pdf_import, protocol, render,
+    template,
 };
 use std::collections::BTreeMap;
+use std::num::NonZeroU16;
 
-fn document_render_options(document: &Document) -> render::RenderOptions {
-    let setting = document.extensions.get("makersbrain.render:dither");
-    let algorithm = setting
-        .and_then(|value| value.get("algorithm"))
-        .and_then(serde_json::Value::as_str);
-    let threshold = setting
-        .and_then(|value| value.get("threshold"))
-        .and_then(serde_json::Value::as_u64)
-        .and_then(|value| u8::try_from(value).ok())
-        .unwrap_or(128);
-    let dither = match algorithm {
-        Some("auto") => mb_printer_core::raster::Dither::Auto,
-        Some("threshold") => mb_printer_core::raster::Dither::Threshold(threshold),
-        Some("bayer") => mb_printer_core::raster::Dither::Bayer4,
-        Some("floyd-steinberg") => mb_printer_core::raster::Dither::FloydSteinberg,
-        Some("atkinson") => mb_printer_core::raster::Dither::Atkinson,
-        Some(_) | None => render::RenderOptions::default().dither,
-    };
-    render::RenderOptions {
-        dither,
-        ..Default::default()
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SheetApiError {
+    pub code: &'static str,
+    pub message: String,
+    pub details: serde_json::Value,
+}
+
+impl SheetApiError {
+    fn request(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+            details: serde_json::json!({}),
+        }
+    }
+
+    fn sheet(error: mb_printer_core::sheet::SheetError) -> Self {
+        let details = match &error {
+            mb_printer_core::sheet::SheetError::LabelSizeMismatch {
+                item,
+                actual_width_um,
+                actual_height_um,
+                expected_width_um,
+                expected_height_um,
+            } => serde_json::json!({
+                "item": item,
+                "actualWidthUm": actual_width_um,
+                "actualHeightUm": actual_height_um,
+                "expectedWidthUm": expected_width_um,
+                "expectedHeightUm": expected_height_um,
+            }),
+            mb_printer_core::sheet::SheetError::SlotOutsidePaper { index } => {
+                serde_json::json!({ "index": index })
+            }
+            mb_printer_core::sheet::SheetError::OverlappingSlots { left, right } => {
+                serde_json::json!({ "left": left, "right": right })
+            }
+            mb_printer_core::sheet::SheetError::InvalidFirstSlot { first_slot } => {
+                serde_json::json!({ "firstSlot": first_slot })
+            }
+            mb_printer_core::sheet::SheetError::InvalidDocument { item, .. }
+            | mb_printer_core::sheet::SheetError::Render { item, .. } => {
+                serde_json::json!({ "item": item })
+            }
+            mb_printer_core::sheet::SheetError::OutputTooLarge { limit } => {
+                serde_json::json!({ "limit": limit })
+            }
+            _ => serde_json::json!({}),
+        };
+        Self {
+            code: error.code(),
+            message: error.to_string(),
+            details,
+        }
     }
 }
 
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MaterializeApiError {
+    pub version: u8,
+    pub code: &'static str,
+    pub message: String,
+    pub details: serde_json::Value,
+}
+
+impl MaterializeApiError {
+    fn request(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            version: 1,
+            code,
+            message: message.into(),
+            details: serde_json::json!({}),
+        }
+    }
+
+    fn materialize(error: materialize::MaterializeError) -> Self {
+        let details = match &error {
+            materialize::MaterializeError::InvalidDocument { count } => {
+                serde_json::json!({ "count": count })
+            }
+            materialize::MaterializeError::Template { element, .. } => {
+                serde_json::json!({ "element": element })
+            }
+            materialize::MaterializeError::DuplicateZone { index }
+            | materialize::MaterializeError::UnknownZone { index } => {
+                serde_json::json!({ "index": index })
+            }
+            _ => serde_json::json!({}),
+        };
+        Self {
+            version: 1,
+            code: error.code(),
+            message: error.to_string(),
+            details,
+        }
+    }
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+struct MaterializeOptionsWire {
+    locale: String,
+    current_date: String,
+}
+
+impl Default for MaterializeOptionsWire {
+    fn default() -> Self {
+        Self {
+            locale: "en".into(),
+            current_date: "1970-01-01".into(),
+        }
+    }
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct ZoneBatchInputWire {
+    record_count: u32,
+    zone_ids: Vec<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+struct ZoneBatchOptionsWire {
+    zone_ids: Vec<String>,
+    locale: String,
+    current_date: String,
+}
+
+impl Default for ZoneBatchOptionsWire {
+    fn default() -> Self {
+        Self {
+            zone_ids: Vec::new(),
+            locale: "en".into(),
+            current_date: "1970-01-01".into(),
+        }
+    }
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct SheetOptionsWire {
+    first_slot: usize,
+    dpi: u16,
+}
+
+impl TryFrom<SheetOptionsWire> for mb_printer_core::sheet::SheetOptions {
+    type Error = SheetApiError;
+
+    fn try_from(value: SheetOptionsWire) -> Result<Self, Self::Error> {
+        let dpi = NonZeroU16::new(value.dpi).ok_or_else(|| {
+            SheetApiError::request("sheet.invalid_dpi", "sheet DPI must be positive")
+        })?;
+        Ok(Self {
+            first_slot: value.first_slot,
+            dpi,
+        })
+    }
+}
+
+fn enforce_wire(
+    inputs: &[&str],
+    limits: mb_printer_core::limits::WireLimits,
+) -> Result<(), SheetApiError> {
+    let total = inputs
+        .iter()
+        .try_fold(0usize, |total, input| total.checked_add(input.len()));
+    if total.is_none_or(|total| total > limits.max_input_bytes) {
+        Err(SheetApiError::request(
+            "request.too_large",
+            "sheet request exceeds the encoded input limit",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn document_render_options(document: &Document) -> render::RenderOptions {
+    render::options_for_document(document)
+}
+
+fn processing_limits() -> mb_printer_core::limits::ProcessingLimits {
+    let mut limits = mb_printer_core::limits::ProcessingLimits::default();
+    // JSON byte arrays can expand each binary byte to four encoded bytes.
+    limits.max_plan_bytes = limits.max_plan_bytes.min(limits.max_output_bytes / 4);
+    limits
+}
+
+fn enforce_json_wire(inputs: &[&str]) -> Result<(), String> {
+    let limit = mb_printer_core::limits::WireLimits::default().max_input_bytes;
+    let total = inputs
+        .iter()
+        .try_fold(0usize, |total, input| total.checked_add(input.len()));
+    if total.is_none_or(|bytes| bytes > limit) {
+        Err("request exceeds encoded input limit".into())
+    } else {
+        Ok(())
+    }
+}
+
+fn bounded_json<T: serde::Serialize>(
+    value: &T,
+    limits: &mb_printer_core::limits::ProcessingLimits,
+) -> Result<String, String> {
+    let encoded = serde_json::to_string(value).map_err(|error| error.to_string())?;
+    if encoded.len() > limits.max_output_bytes {
+        Err("encoded output exceeds processing limit".into())
+    } else {
+        Ok(encoded)
+    }
+}
+
+fn parse_document(
+    input: &str,
+    limits: &mb_printer_core::limits::ProcessingLimits,
+) -> Result<Document, String> {
+    enforce_json_wire(&[input])?;
+    let document = Document::from_json(input).map_err(|error| error.to_string())?;
+    document.validate_with_limits(limits).map_err(|errors| {
+        errors
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("; ")
+    })?;
+    Ok(document)
+}
+
 pub fn validate_document_json(input: &str) -> String {
+    if let Err(error) = enforce_json_wire(&[input]) {
+        return serde_json::to_string(&vec![error]).unwrap();
+    }
+    let limits = processing_limits();
     match Document::from_json(input) {
-        Ok(d) => match d.validate() {
+        Ok(d) => match d.validate_with_limits(&limits) {
             Ok(()) => "[]".into(),
             Err(e) => serde_json::to_string(&e.iter().map(ToString::to_string).collect::<Vec<_>>())
                 .unwrap(),
@@ -44,11 +256,13 @@ pub fn capabilities_json() -> String {
     serde_json::to_string(&capabilities::bundled()).expect("definitions serialize")
 }
 pub fn import_v3_json(input: &str) -> Result<String, String> {
-    importer::import_v3(input)
-        .and_then(|v| serde_json::to_string(&v).map_err(importer::ImportError::from))
-        .map_err(|e| e.to_string())
+    enforce_json_wire(&[input])?;
+    let limits = processing_limits();
+    let value = importer::import_v3(input).map_err(|error| error.to_string())?;
+    bounded_json(&value, &limits)
 }
 pub fn evaluate_template_json(input: &str, fields_json: &str) -> Result<String, String> {
+    enforce_json_wire(&[input, fields_json])?;
     let fields: BTreeMap<String, String> =
         serde_json::from_str(fields_json).map_err(|e| e.to_string())?;
     template::evaluate(input, &fields).map_err(|e| e.to_string())
@@ -59,6 +273,7 @@ pub fn evaluate_template_context_json(
     locale: &str,
     current_date: &str,
 ) -> Result<String, String> {
+    enforce_json_wire(&[input, fields_json, locale, current_date])?;
     let fields: BTreeMap<String, String> =
         serde_json::from_str(fields_json).map_err(|e| e.to_string())?;
     template::evaluate_with_context(
@@ -71,6 +286,100 @@ pub fn evaluate_template_context_json(
     )
     .map_err(|e| e.to_string())
 }
+
+pub fn materialize_record_json(
+    document_json: &str,
+    record_json: &str,
+    options_json: &str,
+) -> Result<String, MaterializeApiError> {
+    enforce_materialize_wire(&[document_json, record_json, options_json])?;
+    let document: Document = serde_json::from_str(document_json)
+        .map_err(|error| MaterializeApiError::request("request.invalid_json", error.to_string()))?;
+    let record: BTreeMap<String, String> = serde_json::from_str(record_json)
+        .map_err(|error| MaterializeApiError::request("request.invalid_json", error.to_string()))?;
+    let options: MaterializeOptionsWire = serde_json::from_str(options_json)
+        .map_err(|error| MaterializeApiError::request("request.invalid_json", error.to_string()))?;
+    let output = materialize::materialize_record(
+        &document,
+        &record,
+        materialize::MaterializeOptions {
+            locale: &options.locale,
+            current_date: &options.current_date,
+        },
+    )
+    .map_err(MaterializeApiError::materialize)?;
+    serde_json::to_string(&output)
+        .map_err(|error| MaterializeApiError::request("request.encode_failed", error.to_string()))
+}
+
+pub fn plan_zone_batch_json(
+    document_json: &str,
+    input_json: &str,
+) -> Result<String, MaterializeApiError> {
+    enforce_materialize_wire(&[document_json, input_json])?;
+    let document: Document = serde_json::from_str(document_json)
+        .map_err(|error| MaterializeApiError::request("request.invalid_json", error.to_string()))?;
+    let input: ZoneBatchInputWire = serde_json::from_str(input_json)
+        .map_err(|error| MaterializeApiError::request("request.invalid_json", error.to_string()))?;
+    if input.record_count > mb_printer_core::limits::WireLimits::default().max_request_documents {
+        return Err(MaterializeApiError::request(
+            "request.too_many_documents",
+            "zone batch request contains too many records",
+        ));
+    }
+    let output = materialize::plan_zone_batch(&document, input.record_count, &input.zone_ids)
+        .map_err(MaterializeApiError::materialize)?;
+    serde_json::to_string(&output)
+        .map_err(|error| MaterializeApiError::request("request.encode_failed", error.to_string()))
+}
+
+pub fn materialize_zone_batch_json(
+    document_json: &str,
+    records_json: &str,
+    options_json: &str,
+) -> Result<String, MaterializeApiError> {
+    enforce_materialize_wire(&[document_json, records_json, options_json])?;
+    let document: Document = serde_json::from_str(document_json)
+        .map_err(|error| MaterializeApiError::request("request.invalid_json", error.to_string()))?;
+    let records: Vec<BTreeMap<String, String>> = serde_json::from_str(records_json)
+        .map_err(|error| MaterializeApiError::request("request.invalid_json", error.to_string()))?;
+    let options: ZoneBatchOptionsWire = serde_json::from_str(options_json)
+        .map_err(|error| MaterializeApiError::request("request.invalid_json", error.to_string()))?;
+    if records.len() > mb_printer_core::limits::WireLimits::default().max_request_documents as usize
+    {
+        return Err(MaterializeApiError::request(
+            "request.too_many_documents",
+            "materialization request contains too many records",
+        ));
+    }
+    let output = materialize::materialize_zone_batch(
+        &document,
+        &records,
+        &options.zone_ids,
+        materialize::MaterializeOptions {
+            locale: &options.locale,
+            current_date: &options.current_date,
+        },
+    )
+    .map_err(MaterializeApiError::materialize)?;
+    serde_json::to_string(&output)
+        .map_err(|error| MaterializeApiError::request("request.encode_failed", error.to_string()))
+}
+
+fn enforce_materialize_wire(inputs: &[&str]) -> Result<(), MaterializeApiError> {
+    let limit = mb_printer_core::limits::WireLimits::default().max_input_bytes;
+    let total = inputs
+        .iter()
+        .try_fold(0usize, |total, input| total.checked_add(input.len()));
+    if total.is_none_or(|bytes| bytes > limit) {
+        Err(MaterializeApiError::request(
+            "request.too_large",
+            "materialization request exceeds the encoded input limit",
+        ))
+    } else {
+        Ok(())
+    }
+}
 pub fn extract_laposte_json(
     code: &str,
     page: u32,
@@ -80,6 +389,15 @@ pub fn extract_laposte_json(
     raster_height: u32,
     pixels: Vec<u8>,
 ) -> Result<String, String> {
+    let limits = processing_limits();
+    let pixel_count = u64::from(raster_width)
+        .checked_mul(u64::from(raster_height))
+        .ok_or_else(|| "raster dimensions exceed processing limit".to_owned())?;
+    if pixel_count > limits.max_canvas_pixels
+        || usize::try_from(pixel_count).ok() != Some(pixels.len())
+    {
+        return Err("raster dimensions exceed processing limit".into());
+    }
     let stamps = mb_printer_core::laposte::extract(
         &[mb_printer_core::laposte::NormalizedPage {
             page,
@@ -95,7 +413,7 @@ pub fn extract_laposte_json(
     )
     .map_err(|e| e.to_string())?;
     let values:Vec<_>=stamps.into_iter().map(|s|serde_json::json!({"page":s.page,"sourcePage":s.page,"slot":s.slot,"widthUm":s.width_um,"heightUm":s.height_um,"rasterWidth":s.raster.width,"rasterHeight":s.raster.height,"pixels":s.raster.pixels})).collect();
-    serde_json::to_string(&values).map_err(|e| e.to_string())
+    bounded_json(&values, &limits)
 }
 pub fn protocol_plan_json(
     model: &str,
@@ -103,8 +421,17 @@ pub fn protocol_plan_json(
     height: u32,
     bytes_json: &str,
 ) -> Result<String, String> {
+    enforce_json_wire(&[bytes_json])?;
+    let limits = processing_limits();
     let printer = capabilities::by_id(model).ok_or_else(|| format!("unknown model: {model}"))?;
     let data: Vec<u8> = serde_json::from_str(bytes_json).map_err(|e| e.to_string())?;
+    let pixels = u64::from(width_bytes)
+        .checked_mul(8)
+        .and_then(|width| width.checked_mul(u64::from(height)))
+        .ok_or_else(|| "raster dimensions exceed processing limit".to_owned())?;
+    if pixels > limits.max_canvas_pixels || data.len() > limits.max_plan_bytes {
+        return Err("raster dimensions exceed processing limit".into());
+    }
     let raster = protocol::Raster {
         width_bytes,
         height,
@@ -121,41 +448,70 @@ pub fn protocol_plan_json(
         ),
         ..Default::default()
     };
-    let plan = protocol::plan(&printer, &raster, &options).map_err(|e| e.to_string())?;
-    serde_json::to_string(&plan).map_err(|e| e.to_string())
+    let plan = protocol::plan_with_limits(&printer, &raster, &options, &limits)
+        .map_err(|e| e.to_string())?;
+    bounded_json(&plan, &limits)
 }
 pub fn render_packed(input: &str) -> Result<Vec<u8>, String> {
-    let doc = Document::from_json(input).map_err(|e| e.to_string())?;
-    render::render(&doc, document_render_options(&doc))
+    let limits = processing_limits();
+    let doc = parse_document(input, &limits)?;
+    let output = render::render_with_limits(&doc, document_render_options(&doc), &limits)
         .map_err(|e| e.to_string())?
         .pack_msb()
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    if output.len() > limits.max_output_bytes {
+        Err("packed raster exceeds processing limit".into())
+    } else {
+        Ok(output)
+    }
 }
 pub fn render_png(input: &str) -> Result<Vec<u8>, String> {
-    let doc = Document::from_json(input).map_err(|e| e.to_string())?;
-    let raster = render::render(&doc, document_render_options(&doc)).map_err(|e| e.to_string())?;
-    export::png(&raster, doc.media.dpi).map_err(|e| e.to_string())
+    let limits = processing_limits();
+    let doc = parse_document(input, &limits)?;
+    let raster = render::render_with_limits(&doc, document_render_options(&doc), &limits)
+        .map_err(|e| e.to_string())?;
+    export::png_with_limits(&raster, doc.media.dpi, &limits).map_err(|e| e.to_string())
 }
 pub fn render_pdf(input: &str) -> Result<Vec<u8>, String> {
-    let doc = Document::from_json(input).map_err(|e| e.to_string())?;
-    let raster = render::render(&doc, document_render_options(&doc)).map_err(|e| e.to_string())?;
-    export::pdf_physical(&raster, doc.media.width, doc.media.height).map_err(|e| e.to_string())
+    let limits = processing_limits();
+    let doc = parse_document(input, &limits)?;
+    let raster = render::render_with_limits(&doc, document_render_options(&doc), &limits)
+        .map_err(|e| e.to_string())?;
+    export::pdf_physical_with_limits(&raster, doc.media.width, doc.media.height, &limits)
+        .map_err(|e| e.to_string())
 }
 pub fn render_batch_pdf(input: &str) -> Result<Vec<u8>, String> {
+    enforce_json_wire(&[input])?;
+    let limits = processing_limits();
     let documents: Vec<Document> = serde_json::from_str(input).map_err(|e| e.to_string())?;
+    if documents.is_empty()
+        || documents.len() > usize::try_from(limits.max_pages).unwrap_or(usize::MAX)
+        || documents.len()
+            > usize::try_from(mb_printer_core::limits::WireLimits::default().max_request_documents)
+                .unwrap_or(usize::MAX)
+    {
+        return Err("batch document count exceeds processing limit".into());
+    }
     let mut rasters = Vec::with_capacity(documents.len());
+    let mut total_pixels = 0u64;
     for document in &documents {
-        document.validate().map_err(|errors| {
+        document.validate_with_limits(&limits).map_err(|errors| {
             errors
                 .iter()
                 .map(ToString::to_string)
                 .collect::<Vec<_>>()
                 .join("; ")
         })?;
-        rasters.push(
-            render::render(document, document_render_options(document))
-                .map_err(|e| e.to_string())?,
-        );
+        let raster =
+            render::render_with_limits(document, document_render_options(document), &limits)
+                .map_err(|e| e.to_string())?;
+        total_pixels = total_pixels
+            .checked_add(u64::from(raster.width) * u64::from(raster.height))
+            .ok_or_else(|| "batch pixels exceed processing limit".to_owned())?;
+        if total_pixels > limits.max_total_pixels {
+            return Err("batch pixels exceed processing limit".into());
+        }
+        rasters.push(raster);
     }
     let pages = rasters
         .iter()
@@ -166,14 +522,83 @@ pub fn render_batch_pdf(input: &str) -> Result<Vec<u8>, String> {
             height_um: document.media.height,
         })
         .collect::<Vec<_>>();
-    export::pdf_pages_physical(&pages).map_err(|e| e.to_string())
+    export::pdf_pages_physical_with_limits(&pages, &limits).map_err(|e| e.to_string())
+}
+
+pub fn plan_sheet_json(
+    plan_input_json: &str,
+    layout_json: &str,
+    options_json: &str,
+) -> Result<String, SheetApiError> {
+    let wire_limits = mb_printer_core::limits::WireLimits::default();
+    enforce_wire(&[plan_input_json, layout_json, options_json], wire_limits)?;
+    let input: mb_printer_core::sheet::SheetPlanInput = serde_json::from_str(plan_input_json)
+        .map_err(|error| SheetApiError::request("request.invalid_json", error.to_string()))?;
+    if input.item_count > wire_limits.max_request_documents {
+        return Err(SheetApiError::request(
+            "request.too_many_documents",
+            "sheet request contains too many items",
+        ));
+    }
+    let definition: mb_printer_core::sheet::SheetDefinition = serde_json::from_str(layout_json)
+        .map_err(|error| SheetApiError::request("request.invalid_json", error.to_string()))?;
+    let options: SheetOptionsWire = serde_json::from_str(options_json)
+        .map_err(|error| SheetApiError::request("request.invalid_json", error.to_string()))?;
+    let plan = mb_printer_core::sheet::plan(
+        input,
+        &definition,
+        options.try_into()?,
+        &mb_printer_core::limits::ProcessingLimits::default(),
+    )
+    .map_err(SheetApiError::sheet)?;
+    serde_json::to_string(&plan)
+        .map_err(|error| SheetApiError::request("internal.serialization", error.to_string()))
+}
+
+pub fn build_sheet_pdf_json(
+    documents_json: &str,
+    layout_json: &str,
+    options_json: &str,
+) -> Result<Vec<u8>, SheetApiError> {
+    let wire_limits = mb_printer_core::limits::WireLimits::default();
+    enforce_wire(&[documents_json, layout_json, options_json], wire_limits)?;
+    let documents: Vec<Document> = serde_json::from_str(documents_json)
+        .map_err(|error| SheetApiError::request("request.invalid_json", error.to_string()))?;
+    if documents.len()
+        > usize::try_from(wire_limits.max_request_documents).map_err(|_| {
+            SheetApiError::request("request.too_many_documents", "invalid document limit")
+        })?
+    {
+        return Err(SheetApiError::request(
+            "request.too_many_documents",
+            "sheet request contains too many documents",
+        ));
+    }
+    let definition: mb_printer_core::sheet::SheetDefinition = serde_json::from_str(layout_json)
+        .map_err(|error| SheetApiError::request("request.invalid_json", error.to_string()))?;
+    let options: SheetOptionsWire = serde_json::from_str(options_json)
+        .map_err(|error| SheetApiError::request("request.invalid_json", error.to_string()))?;
+    mb_printer_core::sheet::pdf(
+        &documents,
+        &definition,
+        options.try_into()?,
+        &mb_printer_core::limits::ProcessingLimits::default(),
+    )
+    .map_err(SheetApiError::sheet)
 }
 pub fn normalize_pdf_json(
     bytes: Vec<u8>,
     dpi: u16,
     first_page_only: bool,
 ) -> Result<String, String> {
-    let pages = pdf_import::normalize(bytes, dpi, first_page_only, 100_000_000)
+    if bytes.len() > mb_printer_core::limits::WireLimits::default().max_input_bytes {
+        return Err("PDF input exceeds encoded input limit".into());
+    }
+    let mut limits = processing_limits();
+    let json_pixels = u64::try_from(limits.max_output_bytes / 4).unwrap_or(u64::MAX);
+    limits.max_canvas_pixels = limits.max_canvas_pixels.min(json_pixels);
+    limits.max_total_pixels = limits.max_total_pixels.min(json_pixels);
+    let pages = pdf_import::normalize_with_limits(bytes, dpi, first_page_only, &limits)
         .map_err(|e| e.to_string())?;
     let values: Vec<_> = pages
         .into_iter()
@@ -185,13 +610,21 @@ pub fn normalize_pdf_json(
             })
         })
         .collect();
-    serde_json::to_string(&values).map_err(|e| e.to_string())
+    bounded_json(&values, &limits)
 }
 pub fn extract_laposte_pdf_json(code: &str, bytes: Vec<u8>, dpi: u16) -> Result<String, String> {
-    let pages = pdf_import::normalize(bytes, dpi, false, 100_000_000).map_err(|e| e.to_string())?;
+    if bytes.len() > mb_printer_core::limits::WireLimits::default().max_input_bytes {
+        return Err("PDF input exceeds encoded input limit".into());
+    }
+    let mut limits = processing_limits();
+    let json_pixels = u64::try_from(limits.max_output_bytes / 4).unwrap_or(u64::MAX);
+    limits.max_canvas_pixels = limits.max_canvas_pixels.min(json_pixels);
+    limits.max_total_pixels = limits.max_total_pixels.min(json_pixels);
+    let pages =
+        pdf_import::normalize_with_limits(bytes, dpi, false, &limits).map_err(|e| e.to_string())?;
     let stamps = mb_printer_core::laposte::extract(&pages, code).map_err(|e| e.to_string())?;
     let values:Vec<_>=stamps.into_iter().map(|s|serde_json::json!({"page":s.page,"sourcePage":s.page,"slot":s.slot,"widthUm":s.width_um,"heightUm":s.height_um,"rasterWidth":s.raster.width,"rasterHeight":s.raster.height,"pixels":s.raster.pixels})).collect();
-    serde_json::to_string(&values).map_err(|e| e.to_string())
+    bounded_json(&values, &limits)
 }
 /// Every media a model can carry, already filtered by head width and tape width.
 pub fn media_presets_json(model: &str) -> Result<String, String> {
@@ -214,11 +647,24 @@ pub fn status_plan_json(model: &str) -> Result<String, String> {
 /// Decodes the `1a <type> <payload>` notification frames a Phomemo printer
 /// returns to the `1f 11` queries. Input is a JSON array of byte arrays.
 pub fn parse_phomemo_status_json(frames_json: &str) -> Result<String, String> {
+    enforce_json_wire(&[frames_json])?;
     let frames: Vec<Vec<u8>> = serde_json::from_str(frames_json).map_err(|e| e.to_string())?;
+    let limits = processing_limits();
+    let bytes = frames
+        .iter()
+        .try_fold(0usize, |total, frame| total.checked_add(frame.len()));
+    if frames.len() > limits.max_plan_actions
+        || bytes.is_none_or(|bytes| bytes > limits.max_resource_bytes)
+    {
+        return Err("status frames exceed processing limit".into());
+    }
     serde_json::to_string(&protocol::phomemo_parse_status(&frames)).map_err(|e| e.to_string())
 }
 /// Decodes the 32-byte reply a Brother printer returns to `ESC i S`.
 pub fn parse_brother_status_json(data: &[u8]) -> Result<String, String> {
+    if data.len() > processing_limits().max_resource_bytes {
+        return Err("status frame exceeds processing limit".into());
+    }
     let status = protocol::brother_parse_status(data).map_err(|e| e.to_owned())?;
     serde_json::to_string(&status).map_err(|e| e.to_string())
 }
@@ -230,17 +676,17 @@ pub fn render_protocol_plan_with_options(
     model: &str,
     options_json: &str,
 ) -> Result<String, String> {
-    let doc = Document::from_json(input).map_err(|e| e.to_string())?;
-    doc.validate().map_err(|errors| {
-        errors
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join("; ")
-    })?;
+    enforce_json_wire(&[input, options_json])?;
+    let limits = processing_limits();
+    let doc = parse_document(input, &limits)?;
     let printer = capabilities::by_id(model).ok_or_else(|| format!("unknown model: {model}"))?;
-    let raster = render::render_for_printer(&doc, &printer, document_render_options(&doc))
-        .map_err(|e| e.to_string())?;
+    let raster = render::render_for_printer_with_limits(
+        &doc,
+        &printer,
+        document_render_options(&doc),
+        &limits,
+    )
+    .map_err(|e| e.to_string())?;
     let mut options: protocol::Options =
         serde_json::from_str(options_json).map_err(|e| e.to_string())?;
     if printer.protocol == capabilities::Protocol::Tspl {
@@ -284,12 +730,47 @@ pub fn render_protocol_plan_with_options(
             });
         }
     }
-    let plan = protocol::plan(&printer, &raster, &options).map_err(|e| e.to_string())?;
-    serde_json::to_string(&plan).map_err(|e| e.to_string())
+    let plan = protocol::plan_with_limits(&printer, &raster, &options, &limits)
+        .map_err(|e| e.to_string())?;
+    bounded_json(&plan, &limits)
 }
 #[cfg(target_arch = "wasm32")]
 mod bindings {
     use wasm_bindgen::prelude::*;
+
+    fn sheet_error(error: super::SheetApiError) -> JsValue {
+        let value = js_sys::Error::new(&error.message);
+        let _ = js_sys::Reflect::set(
+            value.as_ref(),
+            &JsValue::from_str("code"),
+            &JsValue::from_str(error.code),
+        );
+        if let Ok(json) = serde_json::to_string(&error.details)
+            && let Ok(details) = js_sys::JSON::parse(&json)
+        {
+            let _ = js_sys::Reflect::set(value.as_ref(), &JsValue::from_str("details"), &details);
+        }
+        value.into()
+    }
+    fn materialize_error(error: super::MaterializeApiError) -> JsValue {
+        let value = js_sys::Error::new(&error.message);
+        let _ = js_sys::Reflect::set(
+            value.as_ref(),
+            &JsValue::from_str("version"),
+            &JsValue::from_f64(f64::from(error.version)),
+        );
+        let _ = js_sys::Reflect::set(
+            value.as_ref(),
+            &JsValue::from_str("code"),
+            &JsValue::from_str(error.code),
+        );
+        if let Ok(json) = serde_json::to_string(&error.details)
+            && let Ok(details) = js_sys::JSON::parse(&json)
+        {
+            let _ = js_sys::Reflect::set(value.as_ref(), &JsValue::from_str("details"), &details);
+        }
+        value.into()
+    }
     #[wasm_bindgen(js_name=validateDocument)]
     pub fn validate_document(input: &str) -> String {
         super::validate_document_json(input)
@@ -315,6 +796,28 @@ mod bindings {
     ) -> Result<String, JsValue> {
         super::evaluate_template_context_json(input, fields_json, locale, current_date)
             .map_err(|e| JsValue::from_str(&e))
+    }
+    #[wasm_bindgen(js_name=materializeRecord)]
+    pub fn materialize_record(
+        document_json: &str,
+        record_json: &str,
+        options_json: &str,
+    ) -> Result<String, JsValue> {
+        super::materialize_record_json(document_json, record_json, options_json)
+            .map_err(materialize_error)
+    }
+    #[wasm_bindgen(js_name=planZoneBatch)]
+    pub fn plan_zone_batch(document_json: &str, input_json: &str) -> Result<String, JsValue> {
+        super::plan_zone_batch_json(document_json, input_json).map_err(materialize_error)
+    }
+    #[wasm_bindgen(js_name=materializeZoneBatch)]
+    pub fn materialize_zone_batch(
+        document_json: &str,
+        records_json: &str,
+        options_json: &str,
+    ) -> Result<String, JsValue> {
+        super::materialize_zone_batch_json(document_json, records_json, options_json)
+            .map_err(materialize_error)
     }
     #[wasm_bindgen(js_name=extractLaPoste)]
     pub fn extract_laposte(
@@ -362,6 +865,22 @@ mod bindings {
     #[wasm_bindgen(js_name=renderBatchPdf)]
     pub fn render_batch_pdf(input: &str) -> Result<Vec<u8>, JsValue> {
         super::render_batch_pdf(input).map_err(|e| JsValue::from_str(&e))
+    }
+    #[wasm_bindgen(js_name=planSheet)]
+    pub fn plan_sheet(
+        plan_input_json: &str,
+        layout_json: &str,
+        options_json: &str,
+    ) -> Result<String, JsValue> {
+        super::plan_sheet_json(plan_input_json, layout_json, options_json).map_err(sheet_error)
+    }
+    #[wasm_bindgen(js_name=buildSheetPdf)]
+    pub fn build_sheet_pdf(
+        documents_json: &str,
+        layout_json: &str,
+        options_json: &str,
+    ) -> Result<Vec<u8>, JsValue> {
+        super::build_sheet_pdf_json(documents_json, layout_json, options_json).map_err(sheet_error)
     }
     #[wasm_bindgen(js_name=normalizePdf)]
     pub fn normalize_pdf(

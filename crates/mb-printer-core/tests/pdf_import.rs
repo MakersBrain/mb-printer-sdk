@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-use mb_printer_core::{export, pdf_import, raster::MonoRaster};
+use mb_printer_core::{export, limits::ProcessingLimits, pdf_import, raster::MonoRaster};
 
 fn base14_helvetica_pdf() -> Vec<u8> {
     let content = "BT /F1 24 Tf 10 35 Td (Hello) Tj ET";
@@ -70,6 +70,74 @@ fn multipage_and_malformed_inputs_are_bounded() {
         1
     );
     assert!(pdf_import::normalize(b"not a PDF".to_vec(), 72, true, 100).is_err());
+}
+
+#[test]
+fn limit_aware_normalization_rejects_encoded_and_malformed_input() {
+    let pdf = base14_helvetica_pdf();
+    let limits = ProcessingLimits {
+        max_resource_bytes: pdf.len() - 1,
+        ..ProcessingLimits::default()
+    };
+    assert!(matches!(
+        pdf_import::normalize_with_limits(pdf, 72, true, &limits),
+        Err(pdf_import::PdfImportError::TooLarge)
+    ));
+    assert!(matches!(
+        pdf_import::normalize_with_limits(
+            b"not a PDF".to_vec(),
+            72,
+            true,
+            &ProcessingLimits::default(),
+        ),
+        Err(pdf_import::PdfImportError::Invalid)
+    ));
+}
+
+#[test]
+fn limit_aware_normalization_bounds_pages_pixels_and_retained_grayscale() {
+    let raster = MonoRaster {
+        width: 8,
+        height: 8,
+        pixels: vec![0; 64],
+    };
+    let pdf = export::pdf_pages(&[(&raster, 72), (&raster, 72)]).unwrap();
+
+    for (limits, first_page_only) in [
+        (
+            ProcessingLimits {
+                max_pages: 1,
+                ..ProcessingLimits::default()
+            },
+            true,
+        ),
+        (
+            ProcessingLimits {
+                max_canvas_pixels: 63,
+                ..ProcessingLimits::default()
+            },
+            true,
+        ),
+        (
+            ProcessingLimits {
+                max_total_pixels: 127,
+                ..ProcessingLimits::default()
+            },
+            false,
+        ),
+        (
+            ProcessingLimits {
+                max_output_bytes: 127,
+                ..ProcessingLimits::default()
+            },
+            false,
+        ),
+    ] {
+        assert!(matches!(
+            pdf_import::normalize_with_limits(pdf.clone(), 72, first_page_only, &limits),
+            Err(pdf_import::PdfImportError::TooLarge)
+        ));
+    }
 }
 
 #[test]

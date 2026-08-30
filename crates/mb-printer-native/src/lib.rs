@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #![deny(unsafe_op_in_unsafe_fn)]
 pub mod transports;
-use mb_printer_core::protocol::{Action, Plan, ResponseValidation};
+use mb_printer_core::{
+    capabilities::Protocol,
+    protocol::{Action, Plan, ResponseValidation},
+};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::{
@@ -76,11 +79,11 @@ pub enum ExecuteError {
     Replay(String),
     #[error("replay store failed: {0}")]
     ReplayStore(String),
-    #[error("transport failed after {progress:?}: {message}")]
+    #[error("transport failed: {message}")]
     Transport { progress: Progress, message: String },
-    #[error("response timed out after {progress:?}")]
+    #[error("response timed out")]
     Timeout { progress: Progress },
-    #[error("invalid response after {progress:?}: {message}")]
+    #[error("invalid response: {message}")]
     Response { progress: Progress, message: String },
 }
 pub fn execute<T: Transport>(plan: &Plan, t: &mut T) -> Result<Progress, ExecuteError> {
@@ -91,8 +94,62 @@ pub fn execute_with_timing<T: Transport>(
     t: &mut T,
     timing: ReferenceTiming,
 ) -> Result<Progress, ExecuteError> {
-    let limit = t.payload_limit();
+    let payload_limit = t.payload_limit();
     let command_limit = t.command_limit();
+    let span = execution_span(
+        plan.protocol,
+        plan.actions.len(),
+        payload_limit,
+        command_limit,
+        timing,
+    );
+    let transport_span = transport_lifecycle_span(&span, payload_limit, command_limit);
+    let started = std::time::Instant::now();
+    let result = {
+        let _entered = span.enter();
+        let _transport_entered = transport_span.enter();
+        execute_with_timing_inner(plan, t, timing, payload_limit, command_limit)
+    };
+    let progress = match &result {
+        Ok(progress) => Some(progress),
+        Err(error) => error_progress(error),
+    };
+    if let Some(progress) = progress {
+        if let Some(action) = progress.last_completed_action {
+            span.record("last_completed_action", action);
+        }
+        span.record("bytes_written", progress.bytes_written);
+        span.record("response_count", progress.responses.len());
+    }
+    span.record(
+        "duration_ms",
+        u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+    );
+    match &result {
+        Ok(_) => {
+            span.record("outcome", "completed");
+            transport_span.record("outcome", "completed");
+            tracing::debug!(parent: &transport_span, "native transport lifecycle completed");
+            tracing::info!(parent: &span, "native plan execution completed");
+        }
+        Err(error) => {
+            span.record("outcome", "failed");
+            span.record("error_code", execute_error_code(error));
+            transport_span.record("outcome", "failed");
+            tracing::debug!(parent: &transport_span, "native transport lifecycle failed");
+            tracing::warn!(parent: &span, "native plan execution failed");
+        }
+    }
+    result
+}
+
+fn execute_with_timing_inner<T: Transport>(
+    plan: &Plan,
+    t: &mut T,
+    timing: ReferenceTiming,
+    limit: usize,
+    command_limit: usize,
+) -> Result<Progress, ExecuteError> {
     if limit == 0 {
         return Err(ExecuteError::InvalidPlan {
             action: 0,
@@ -127,9 +184,24 @@ pub fn execute_with_timing<T: Transport>(
     for (i, a) in plan.actions.iter().enumerate() {
         let result: Result<(), ExecuteError> = match a {
             Action::JobBoundary { .. } => Ok(()),
-            Action::SubscribeNotifications => t
-                .subscribe_notifications()
-                .map_err(|message| fail(&p, message)),
+            Action::SubscribeNotifications => {
+                let operation = transport_operation_span("subscribe", i);
+                let result = {
+                    let _entered = operation.enter();
+                    t.subscribe_notifications()
+                        .map_err(|message| fail(&p, message))
+                };
+                operation.record(
+                    "outcome",
+                    if result.is_ok() {
+                        "completed"
+                    } else {
+                        "failed"
+                    },
+                );
+                tracing::debug!(parent: &operation, "native transport operation finished");
+                result
+            }
             Action::Delay { milliseconds } => {
                 t.delay_monotonic(timing.apply(*milliseconds));
                 Ok(())
@@ -156,7 +228,7 @@ pub fn execute_with_timing<T: Transport>(
                 timeout_ms,
                 fallback_delay_ms,
                 validation,
-            } => match collect_response(t, *timeout_ms, *validation) {
+            } => match collect_response_observed(t, *timeout_ms, *validation, i) {
                 Ok(WaitOutcome::Response(bytes)) => {
                     let outcome = validate(*validation, &bytes, &p);
                     if outcome.is_ok() {
@@ -188,6 +260,121 @@ pub fn execute_with_timing<T: Transport>(
         p.last_completed_action = Some(i)
     }
     Ok(p)
+}
+
+fn execution_span(
+    protocol: Protocol,
+    action_count: usize,
+    payload_limit: usize,
+    command_limit: usize,
+    timing: ReferenceTiming,
+) -> tracing::Span {
+    tracing::info_span!(
+        "native.plan.execute",
+        protocol = protocol_name(protocol),
+        action_count,
+        payload_limit,
+        command_limit,
+        timing = timing_name(timing),
+        outcome = tracing::field::Empty,
+        error_code = tracing::field::Empty,
+        last_completed_action = tracing::field::Empty,
+        bytes_written = tracing::field::Empty,
+        response_count = tracing::field::Empty,
+        duration_ms = tracing::field::Empty,
+    )
+}
+
+fn transport_operation_span(operation: &'static str, action_index: usize) -> tracing::Span {
+    tracing::debug_span!(
+        "native.transport.operation",
+        operation,
+        action_index,
+        outcome = tracing::field::Empty,
+    )
+}
+
+fn transport_lifecycle_span(
+    parent: &tracing::Span,
+    payload_limit: usize,
+    command_limit: usize,
+) -> tracing::Span {
+    tracing::info_span!(
+        parent: parent,
+        "native.transport.lifecycle",
+        payload_limit,
+        command_limit,
+        outcome = tracing::field::Empty,
+    )
+}
+
+const fn protocol_name(protocol: Protocol) -> &'static str {
+    match protocol {
+        Protocol::MSeries => "m-series",
+        Protocol::M02 => "m02",
+        Protocol::M04 => "m04",
+        Protocol::M110 => "m110",
+        Protocol::DSeries => "d-series",
+        Protocol::P12 => "p12",
+        Protocol::Tspl => "tspl",
+        Protocol::Brother => "brother",
+    }
+}
+
+const fn timing_name(timing: ReferenceTiming) -> &'static str {
+    match timing {
+        ReferenceTiming::Preserve => "preserve",
+        ReferenceTiming::IncreaseBy(_) => "increased",
+        ReferenceTiming::UnsafeDiagnosticReduceBy(_) => "diagnostic-reduced",
+    }
+}
+
+const fn execute_error_code(error: &ExecuteError) -> &'static str {
+    match error {
+        ExecuteError::AtomicTooLarge { .. } => "atomic-too-large",
+        ExecuteError::InvalidPlan { .. } => "invalid-plan",
+        ExecuteError::Replay(_) => "replay",
+        ExecuteError::ReplayStore(_) => "replay-store",
+        ExecuteError::Transport { .. } => "transport",
+        ExecuteError::Timeout { .. } => "timeout",
+        ExecuteError::Response { .. } => "response",
+    }
+}
+
+fn error_progress(error: &ExecuteError) -> Option<&Progress> {
+    match error {
+        ExecuteError::Transport { progress, .. }
+        | ExecuteError::Timeout { progress }
+        | ExecuteError::Response { progress, .. } => Some(progress),
+        ExecuteError::AtomicTooLarge { .. }
+        | ExecuteError::InvalidPlan { .. }
+        | ExecuteError::Replay(_)
+        | ExecuteError::ReplayStore(_) => None,
+    }
+}
+
+fn collect_response_observed<T: Transport>(
+    t: &mut T,
+    timeout_ms: u64,
+    validation: ResponseValidation,
+    action_index: usize,
+) -> Result<WaitOutcome, String> {
+    let operation = transport_operation_span("wait-response", action_index);
+    let outcome = {
+        let _entered = operation.enter();
+        collect_response(t, timeout_ms, validation)
+    };
+    operation.record(
+        "outcome",
+        match &outcome {
+            Ok(WaitOutcome::Response(_)) => "response",
+            Ok(WaitOutcome::Timeout) => "timeout",
+            Ok(WaitOutcome::Unavailable) => "unavailable",
+            Err(_) => "failed",
+        },
+    );
+    tracing::debug!(parent: &operation, "native transport operation finished");
+    outcome
 }
 
 /// Bulk endpoints may split a reply across reads, so keep reading until the
@@ -345,5 +532,119 @@ fn validate(v: ResponseValidation, b: &[u8], p: &Progress) -> Result<(), Execute
             progress: p.clone(),
             message: "response did not match declared validator".into(),
         }),
+    }
+}
+
+#[cfg(test)]
+mod observability_tests {
+    use super::*;
+    use tracing::{
+        Event, Metadata, Subscriber,
+        span::{Attributes, Id, Record},
+    };
+
+    #[derive(Debug)]
+    struct EnabledSubscriber;
+
+    impl Subscriber for EnabledSubscriber {
+        fn enabled(&self, _: &Metadata<'_>) -> bool {
+            true
+        }
+
+        fn new_span(&self, _: &Attributes<'_>) -> Id {
+            Id::from_u64(1)
+        }
+
+        fn record(&self, _: &Id, _: &Record<'_>) {}
+
+        fn record_follows_from(&self, _: &Id, _: &Id) {}
+
+        fn event(&self, _: &Event<'_>) {}
+
+        fn enter(&self, _: &Id) {}
+
+        fn exit(&self, _: &Id) {}
+    }
+
+    fn field_names(span: &tracing::Span) -> Vec<&'static str> {
+        span.metadata()
+            .expect("test subscriber enables spans")
+            .fields()
+            .iter()
+            .map(|field| field.name())
+            .collect()
+    }
+
+    #[test]
+    fn trace_fields_are_strict_safe_allowlists() {
+        tracing::subscriber::with_default(EnabledSubscriber, || {
+            assert_eq!(
+                field_names(&execution_span(
+                    Protocol::Brother,
+                    4,
+                    512,
+                    512,
+                    ReferenceTiming::Preserve,
+                )),
+                [
+                    "protocol",
+                    "action_count",
+                    "payload_limit",
+                    "command_limit",
+                    "timing",
+                    "outcome",
+                    "error_code",
+                    "last_completed_action",
+                    "bytes_written",
+                    "response_count",
+                    "duration_ms",
+                ]
+            );
+            assert_eq!(
+                field_names(&transport_lifecycle_span(
+                    &tracing::Span::current(),
+                    512,
+                    512,
+                )),
+                ["payload_limit", "command_limit", "outcome"]
+            );
+            assert_eq!(
+                field_names(&transport_operation_span("wait-response", 2)),
+                ["operation", "action_index", "outcome"]
+            );
+        });
+    }
+
+    #[test]
+    fn execute_error_display_never_contains_progress_or_response_frames() {
+        let progress = Progress {
+            last_completed_action: Some(7),
+            bytes_written: 12_345,
+            potentially_accepted_write: true,
+            responses: vec![vec![222, 173, 190, 239]],
+        };
+        let errors = [
+            ExecuteError::Transport {
+                progress: progress.clone(),
+                message: "socket closed".into(),
+            },
+            ExecuteError::Timeout {
+                progress: progress.clone(),
+            },
+            ExecuteError::Response {
+                progress,
+                message: "validator mismatch".into(),
+            },
+        ];
+
+        for error in errors {
+            let display = error.to_string();
+            for forbidden in ["Progress", "responses", "222", "12345", "12_345"] {
+                assert!(
+                    !display.contains(forbidden),
+                    "error Display leaked {forbidden}: {display}"
+                );
+            }
+        }
     }
 }

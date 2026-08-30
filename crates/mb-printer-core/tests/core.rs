@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-use mb_printer_core::{capabilities, document::*, importer, protocol, template};
+use mb_printer_core::{
+    capabilities, document::*, importer, limits::ProcessingLimits, protocol, template,
+};
 use std::collections::BTreeMap;
 #[test]
 fn printer_definitions_are_losslessly_loaded() {
@@ -250,5 +252,46 @@ fn protocol_rejects_zero_copy_and_cut_cadence() {
             }
         ),
         Err(protocol::PlanError::Range("cut every"))
+    );
+}
+
+#[test]
+fn protocol_rejects_copy_action_and_owned_byte_limits_before_expansion() {
+    let printer = capabilities::by_id("m03").unwrap();
+    let raster = protocol::Raster {
+        width_bytes: 1,
+        height: 1,
+        data: vec![0],
+    };
+    let options = protocol::Options {
+        copies: 2,
+        ..Default::default()
+    };
+
+    let copy_limits = ProcessingLimits {
+        max_copies: 1,
+        ..ProcessingLimits::default()
+    };
+    assert_eq!(
+        protocol::plan_with_limits(&printer, &raster, &options, &copy_limits),
+        Err(protocol::PlanError::Limit("copies"))
+    );
+
+    let action_limits = ProcessingLimits {
+        max_plan_actions: 2,
+        ..ProcessingLimits::default()
+    };
+    assert_eq!(
+        protocol::plan_with_limits(&printer, &raster, &options, &action_limits),
+        Err(protocol::PlanError::Limit("actions"))
+    );
+
+    let byte_limits = ProcessingLimits {
+        max_plan_bytes: 1,
+        ..ProcessingLimits::default()
+    };
+    assert_eq!(
+        protocol::plan_with_limits(&printer, &raster, &options, &byte_limits),
+        Err(protocol::PlanError::Limit("owned bytes"))
     );
 }

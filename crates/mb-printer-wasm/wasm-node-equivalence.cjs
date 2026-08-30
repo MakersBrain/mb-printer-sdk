@@ -29,6 +29,22 @@ for (const test of templateCorpus.cases) {
     if (!test.error || !String(error).includes(test.error)) throw error;
   }
 }
+const materializeFixture = JSON.parse(fs.readFileSync(path.join(__dirname, "../mb-printer-core/fixtures/materialize/parity.json"), "utf8"));
+const materializeDocument = JSON.stringify(materializeFixture.document);
+const materialized = JSON.parse(wasm.materializeRecord(
+  materializeDocument,
+  JSON.stringify(materializeFixture.records[0]),
+  JSON.stringify(materializeFixture.options),
+));
+const materializedValues = materialized.elements.filter(item => ["text", "barcode", "qr-code"].includes(item.type)).map(item => item.text ?? item.data);
+if (JSON.stringify(materializedValues) !== JSON.stringify(materializeFixture.expected.recordValues)) throw new Error("WASM document materialization diverged");
+const zonePlan = JSON.parse(wasm.planZoneBatch(materializeDocument, JSON.stringify({recordCount: materializeFixture.records.length, zoneIds: materializeFixture.zoneIds})));
+if (JSON.stringify(zonePlan) !== JSON.stringify(materializeFixture.expected.plan)) throw new Error("WASM zone batch plan diverged");
+const zonePages = JSON.parse(wasm.materializeZoneBatch(materializeDocument, JSON.stringify(materializeFixture.records), JSON.stringify({...materializeFixture.options, zoneIds: materializeFixture.zoneIds})));
+if (JSON.stringify(zonePages.map(page => page.name)) !== JSON.stringify(materializeFixture.expected.pageNames)) throw new Error("WASM zone batch materialization diverged");
+let materializeError;
+try { wasm.planZoneBatch(materializeDocument, JSON.stringify({recordCount: 1, zoneIds: ["missing"]})); } catch (error) { materializeError = error; }
+if (!materializeError || materializeError.version !== 1 || materializeError.code !== "batch.unknown_zone" || materializeError.details.index !== 0) throw new Error("WASM materialization error is not structured");
 const plan = JSON.parse(wasm.renderProtocolPlan(documentJson, "m03"));
 if (plan.protocol !== "m-series" || plan.actions.length === 0) throw new Error("WASM plan diverged");
 const execution = JSON.parse(fs.readFileSync(path.join(__dirname,"../mb-printer-native/tests/fixtures/execution-contract.json"),"utf8"));
@@ -65,6 +81,14 @@ if (first.length !== 1) throw new Error("WASM first-page PDF normalization diver
 let malformedRejected = false;
 try { wasm.normalizePdf(Uint8Array.from([1, 2, 3]), 72, true); } catch { malformedRejected = true; }
 if (!malformedRejected) throw new Error("WASM accepted malformed PDF");
+const sheetLayout = JSON.stringify({kind:"explicit",id:"node-sheet",paperWidthUm:20000,paperHeightUm:10000,slots:[{xUm:1000,yUm:1000,widthUm:8000,heightUm:1000}]});
+const sheetOptions = JSON.stringify({firstSlot:0,dpi:254});
+const sheetPlan = JSON.parse(wasm.planSheet(JSON.stringify({itemCount:1,labelWidthUm:8000,labelHeightUm:1000}),sheetLayout,sheetOptions));
+if (sheetPlan.pageCount !== 1 || sheetPlan.layout.slots[0].xUm !== 1000) throw new Error("WASM sheet plan diverged");
+if (!Buffer.from(wasm.buildSheetPdf(JSON.stringify([fixture.document]),sheetLayout,sheetOptions)).subarray(0,8).equals(Buffer.from("%PDF-1.4"))) throw new Error("WASM sheet PDF diverged");
+let sheetError;
+try { wasm.planSheet(JSON.stringify({itemCount:1,labelWidthUm:8000,labelHeightUm:1000}),sheetLayout,JSON.stringify({firstSlot:0,dpi:0})); } catch (error) { sheetError = error; }
+if (!sheetError || sheetError.code !== "sheet.invalid_dpi" || typeof sheetError.details !== "object") throw new Error("WASM sheet error is not structured");
 const a4 = structuredClone(fixture.document);
 a4.media = {width:210000,height:297000,unit:"micrometre",dpi:36,orientation:"portrait",printableBounds:{x:0,y:0,width:210000,height:297000},shape:"rectangle"};
 a4.elements[0].transform = {x:0,y:0,width:210000,height:297000};

@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-use crate::capabilities::{PrinterDefinition, Protocol};
+use crate::{
+    capabilities::{PrinterDefinition, Protocol},
+    limits::ProcessingLimits,
+};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -122,6 +125,8 @@ pub enum PlanError {
     Range(&'static str),
     #[error("protocol does not support this operation: {0}")]
     Unsupported(&'static str),
+    #[error("protocol plan exceeds processing limit: {0}")]
+    Limit(&'static str),
 }
 
 /// Builds a document-free plan that only asks the printer for its status.
@@ -175,7 +180,30 @@ pub fn status_plan(printer: &PrinterDefinition) -> Result<Plan, PlanError> {
 }
 
 pub fn plan(printer: &PrinterDefinition, r: &Raster, o: &Options) -> Result<Plan, PlanError> {
-    if r.data.len() != r.width_bytes as usize * r.height as usize {
+    plan_with_limits(printer, r, o, &ProcessingLimits::default())
+}
+
+pub fn plan_with_limits(
+    printer: &PrinterDefinition,
+    r: &Raster,
+    o: &Options,
+    limits: &ProcessingLimits,
+) -> Result<Plan, PlanError> {
+    let plan = plan_inner(printer, r, o, limits)?;
+    enforce_plan_limits(&plan.actions, limits)?;
+    Ok(plan)
+}
+
+fn plan_inner(
+    printer: &PrinterDefinition,
+    r: &Raster,
+    o: &Options,
+    limits: &ProcessingLimits,
+) -> Result<Plan, PlanError> {
+    let expected_raster_len = usize::from(r.width_bytes)
+        .checked_mul(usize::try_from(r.height).map_err(|_| PlanError::Limit("raster bytes"))?)
+        .ok_or(PlanError::Limit("raster bytes"))?;
+    if r.data.len() != expected_raster_len {
         return Err(PlanError::RasterLength);
     }
     if !(1..=8).contains(&o.density) {
@@ -184,18 +212,38 @@ pub fn plan(printer: &PrinterDefinition, r: &Raster, o: &Options) -> Result<Plan
     if o.copies == 0 {
         return Err(PlanError::Range("copies"));
     }
+    if o.copies > limits.max_copies {
+        return Err(PlanError::Limit("copies"));
+    }
     if o.cut && o.cut_every == 0 {
         return Err(PlanError::Range("cut every"));
     }
     if printer.protocol != Protocol::Tspl && o.copies > 1 {
         let mut single = o.clone();
         single.copies = 1;
-        let base = plan(printer, r, &single)?;
-        let mut actions = vec![Action::JobBoundary {
+        let base = plan_inner(printer, r, &single, limits)?;
+        let body = &base.actions[1..base.actions.len() - 1];
+        let body_actions = body.len();
+        let action_count = body_actions
+            .checked_mul(usize::from(o.copies))
+            .and_then(|count| count.checked_add(2))
+            .ok_or(PlanError::Limit("actions"))?;
+        if action_count > limits.max_plan_actions {
+            return Err(PlanError::Limit("actions"));
+        }
+        let body_bytes = plan_owned_bytes(body)?;
+        let expanded_bytes = body_bytes
+            .checked_mul(usize::from(o.copies))
+            .ok_or(PlanError::Limit("owned bytes"))?;
+        if expanded_bytes > limits.max_plan_bytes {
+            return Err(PlanError::Limit("owned bytes"));
+        }
+        let mut actions = Vec::with_capacity(action_count);
+        actions.push(Action::JobBoundary {
             kind: Boundary::Start,
-        }];
+        });
         for _ in 0..o.copies {
-            actions.extend_from_slice(&base.actions[1..base.actions.len() - 1])
+            actions.extend_from_slice(body)
         }
         actions.push(Action::JobBoundary {
             kind: Boundary::End,
@@ -482,6 +530,30 @@ pub fn plan(printer: &PrinterDefinition, r: &Raster, o: &Options) -> Result<Plan
         source_commit: SOURCE_COMMIT.into(),
         actions: a,
     })
+}
+
+fn plan_owned_bytes(actions: &[Action]) -> Result<usize, PlanError> {
+    actions.iter().try_fold(0usize, |total, action| {
+        let bytes = match action {
+            Action::CommandWrite { name, bytes, .. } => name.len().checked_add(bytes.len()),
+            Action::RasterWrite { bytes, .. } => Some(bytes.len()),
+            _ => Some(0),
+        }
+        .ok_or(PlanError::Limit("owned bytes"))?;
+        total
+            .checked_add(bytes)
+            .ok_or(PlanError::Limit("owned bytes"))
+    })
+}
+
+fn enforce_plan_limits(actions: &[Action], limits: &ProcessingLimits) -> Result<(), PlanError> {
+    if actions.len() > limits.max_plan_actions {
+        return Err(PlanError::Limit("actions"));
+    }
+    if plan_owned_bytes(actions)? > limits.max_plan_bytes {
+        return Err(PlanError::Limit("owned bytes"));
+    }
+    Ok(())
 }
 fn tspl_tenths_mm(dots: u64, dpi: u16) -> u16 {
     // Preserve the Python/reference 8 dpmm at 203 DPI without target float math.

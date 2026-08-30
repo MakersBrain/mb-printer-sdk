@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 use mb_printer_core::{Document, render};
+use std::collections::BTreeMap;
 const DOC: &str = r#"{"version":4,"name":"eq","media":{"width":10000,"height":10000,"unit":"micrometre","dpi":203,"orientation":"portrait","printableBounds":{"x":0,"y":0,"width":10000,"height":10000},"shape":"rectangle"},"coordinateSystem":{"unit":"micrometre","origin":"top-left","rounding":"half-away-from-zero"},"elements":[{"type":"rectangle","id":"r","transform":{"x":1000,"y":1000,"width":8000,"height":8000},"zOrder":0,"strokeWidth":250,"fill":false}],"resources":[],"fields":[],"extensions":{}}"#;
 #[test]
 fn wasm_facade_and_native_core_are_identical() {
@@ -66,4 +67,154 @@ fn wasm_facade_infers_brother_62x29_media_and_printable_rows() {
         mb_printer_core::protocol::Action::CommandWrite { bytes, .. }
             if bytes == &[0x1b, 0x69, 0x7a, 0xce, 0x0b, 62, 29, 0x0f, 0x01, 0, 0, 0, 0]
     )));
+}
+
+#[test]
+fn sheet_facade_plans_and_exports_with_structured_errors() {
+    let definition = r#"{"kind":"grid","id":"one","paperWidthUm":30000,"paperHeightUm":20000,"rows":1,"columns":1,"labelWidthUm":10000,"labelHeightUm":10000,"marginLeftUm":5000,"marginTopUm":5000,"gapXUm":0,"gapYUm":0,"fillOrder":"row-major"}"#;
+    let options = r#"{"firstSlot":0,"dpi":100}"#;
+    let plan = mb_printer_wasm::plan_sheet_json(
+        r#"{"itemCount":1,"labelWidthUm":10000,"labelHeightUm":10000}"#,
+        definition,
+        options,
+    )
+    .unwrap();
+    let value: serde_json::Value = serde_json::from_str(&plan).unwrap();
+    assert_eq!(value["pageCount"], 1);
+    assert_eq!(value["layout"]["slots"][0]["xUm"], 5_000);
+
+    let pdf =
+        mb_printer_wasm::build_sheet_pdf_json(&format!("[{DOC}]"), definition, options).unwrap();
+    assert!(pdf.starts_with(b"%PDF-1.4"));
+
+    let error = mb_printer_wasm::plan_sheet_json(
+        r#"{"itemCount":1,"labelWidthUm":10000,"labelHeightUm":10000}"#,
+        definition,
+        r#"{"firstSlot":0,"dpi":0}"#,
+    )
+    .unwrap_err();
+    assert_eq!(error.code, "sheet.invalid_dpi");
+
+    let unknown_layout =
+        definition.replace("\"kind\":\"grid\"", "\"kind\":\"grid\",\"bogus\":true");
+    let error = mb_printer_wasm::plan_sheet_json(
+        r#"{"itemCount":1,"labelWidthUm":10000,"labelHeightUm":10000}"#,
+        &unknown_layout,
+        options,
+    )
+    .unwrap_err();
+    assert_eq!(error.code, "request.invalid_json");
+}
+
+#[test]
+fn materialization_facade_matches_core_and_preserves_structured_errors() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../mb-printer-core/fixtures/materialize/parity.json"
+    ))
+    .unwrap();
+    let document_json = serde_json::to_string(&fixture["document"]).unwrap();
+    let record_json = serde_json::to_string(&fixture["records"][0]).unwrap();
+    let options_json = serde_json::to_string(&fixture["options"]).unwrap();
+    let document: Document = serde_json::from_str(&document_json).unwrap();
+    let record: BTreeMap<String, String> = serde_json::from_str(&record_json).unwrap();
+    let native = mb_printer_core::materialize::materialize_record(
+        &document,
+        &record,
+        mb_printer_core::materialize::MaterializeOptions {
+            locale: fixture["options"]["locale"].as_str().unwrap(),
+            current_date: fixture["options"]["currentDate"].as_str().unwrap(),
+        },
+    )
+    .unwrap();
+    let wasm: Document = serde_json::from_str(
+        &mb_printer_wasm::materialize_record_json(&document_json, &record_json, &options_json)
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        serde_json::to_value(wasm).unwrap(),
+        serde_json::to_value(native).unwrap()
+    );
+
+    let zone_ids = fixture["zoneIds"].clone();
+    let input = serde_json::json!({ "recordCount": 3, "zoneIds": zone_ids });
+    let plan: serde_json::Value = serde_json::from_str(
+        &mb_printer_wasm::plan_zone_batch_json(&document_json, &input.to_string()).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(plan, fixture["expected"]["plan"]);
+
+    let batch_options = serde_json::json!({
+        "zoneIds": fixture["zoneIds"],
+        "locale": fixture["options"]["locale"],
+        "currentDate": fixture["options"]["currentDate"]
+    });
+    let pages: Vec<Document> = serde_json::from_str(
+        &mb_printer_wasm::materialize_zone_batch_json(
+            &document_json,
+            &fixture["records"].to_string(),
+            &batch_options.to_string(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(pages.len(), 2);
+    pages.iter().for_each(|page| page.validate().unwrap());
+
+    let error = mb_printer_wasm::plan_zone_batch_json(
+        &document_json,
+        r#"{"recordCount":1,"zoneIds":["missing"]}"#,
+    )
+    .unwrap_err();
+    assert_eq!(error.version, 1);
+    assert_eq!(error.code, "batch.unknown_zone");
+    assert_eq!(error.details, serde_json::json!({ "index": 0 }));
+    assert!(!error.message.contains("missing"));
+}
+
+#[test]
+fn materialization_facade_rejects_record_counts_above_the_wire_limit() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../mb-printer-core/fixtures/materialize/parity.json"
+    ))
+    .unwrap();
+    let document_json = fixture["document"].to_string();
+    let records = vec![BTreeMap::<String, String>::new(); 1_001];
+    let error = mb_printer_wasm::materialize_zone_batch_json(
+        &document_json,
+        &serde_json::to_string(&records).unwrap(),
+        r#"{"zoneIds":["left"]}"#,
+    )
+    .unwrap_err();
+    assert_eq!(error.code, "request.too_many_documents");
+    let error = mb_printer_wasm::plan_zone_batch_json(
+        &document_json,
+        r#"{"recordCount":1001,"zoneIds":["left"]}"#,
+    )
+    .unwrap_err();
+    assert_eq!(error.code, "request.too_many_documents");
+}
+
+#[test]
+fn wasm_facade_rejects_oversized_wire_batch_and_protocol_requests() {
+    let oversized = " ".repeat(mb_printer_core::limits::WireLimits::default().max_input_bytes + 1);
+    let validation: Vec<String> =
+        serde_json::from_str(&mb_printer_wasm::validate_document_json(&oversized)).unwrap();
+    assert!(validation[0].contains("encoded input limit"));
+
+    let documents = format!(
+        "[{}]",
+        std::iter::repeat_n(DOC, 101).collect::<Vec<_>>().join(",")
+    );
+    assert!(
+        mb_printer_wasm::render_batch_pdf(&documents)
+            .unwrap_err()
+            .contains("document count")
+    );
+
+    assert!(
+        mb_printer_wasm::render_protocol_plan_with_options(DOC, "m03", r#"{"copies":1001}"#,)
+            .unwrap_err()
+            .contains("copies")
+    );
 }

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Memory-safe, pure-Rust PDF normalization for native and browser/WASM callers.
-use crate::{laposte::NormalizedPage, raster::GrayRaster};
+use crate::{laposte::NormalizedPage, limits::ProcessingLimits, raster::GrayRaster};
 use hayro::hayro_interpret::InterpreterSettings;
 use hayro::hayro_syntax::Pdf;
 use hayro::vello_cpu::color::palette::css::WHITE;
@@ -15,7 +15,7 @@ pub enum PdfImportError {
     Invalid,
     #[error("PDF contains no pages")]
     Empty,
-    #[error("PDF page dimensions exceed limits")]
+    #[error("PDF exceeds normalization limits")]
     TooLarge,
 }
 
@@ -26,7 +26,31 @@ pub fn normalize(
     first_page_only: bool,
     max_pixels_per_page: u64,
 ) -> Result<Vec<NormalizedPage>, PdfImportError> {
-    if dpi == 0 || max_pixels_per_page == 0 {
+    let limits = ProcessingLimits {
+        max_canvas_pixels: max_pixels_per_page,
+        max_total_pixels: max_pixels_per_page
+            .saturating_mul(u64::from(ProcessingLimits::default().max_pages)),
+        ..ProcessingLimits::default()
+    };
+    normalize_with_limits(bytes, dpi, first_page_only, &limits)
+}
+
+/// Normalize PDF pages with explicit bounds for untrusted encoded input,
+/// parsed page count, raster work, and retained grayscale output.
+pub fn normalize_with_limits(
+    bytes: Vec<u8>,
+    dpi: u16,
+    first_page_only: bool,
+    limits: &ProcessingLimits,
+) -> Result<Vec<NormalizedPage>, PdfImportError> {
+    if dpi == 0
+        || limits.max_resource_bytes == 0
+        || limits.max_canvas_pixels == 0
+        || limits.max_total_pixels == 0
+        || limits.max_pages == 0
+        || limits.max_output_bytes == 0
+        || bytes.len() > limits.max_resource_bytes
+    {
         return Err(PdfImportError::TooLarge);
     }
     if bytes
@@ -39,9 +63,15 @@ pub fn normalize(
     if pdf.pages().is_empty() {
         return Err(PdfImportError::Empty);
     }
+    let max_pages = usize::try_from(limits.max_pages).unwrap_or(usize::MAX);
+    if pdf.pages().len() > max_pages {
+        return Err(PdfImportError::TooLarge);
+    }
     let cache = RenderCache::new();
     let interpreter = InterpreterSettings::default();
     let mut pages = Vec::new();
+    let mut total_pixels = 0_u64;
+    let mut grayscale_bytes = 0_usize;
     for (index, page) in pdf.pages().iter().enumerate() {
         if first_page_only && index > 0 {
             break;
@@ -56,10 +86,27 @@ pub fn normalize(
             || height < 1.0
             || width > f64::from(u16::MAX)
             || height > f64::from(u16::MAX)
-            || width * height > max_pixels_per_page as f64
         {
             return Err(PdfImportError::TooLarge);
         }
+        let width = width as u16;
+        let height = height as u16;
+        let page_pixels = u64::from(width)
+            .checked_mul(u64::from(height))
+            .ok_or(PdfImportError::TooLarge)?;
+        if page_pixels > limits.max_canvas_pixels {
+            return Err(PdfImportError::TooLarge);
+        }
+        total_pixels = total_pixels
+            .checked_add(page_pixels)
+            .filter(|pixels| *pixels <= limits.max_total_pixels)
+            .ok_or(PdfImportError::TooLarge)?;
+        let page_grayscale_bytes =
+            usize::try_from(page_pixels).map_err(|_| PdfImportError::TooLarge)?;
+        grayscale_bytes = grayscale_bytes
+            .checked_add(page_grayscale_bytes)
+            .filter(|bytes| *bytes <= limits.max_output_bytes)
+            .ok_or(PdfImportError::TooLarge)?;
         let pixmap = hayro::render(
             page,
             &cache,
@@ -67,8 +114,8 @@ pub fn normalize(
             &RenderSettings {
                 x_scale: dpi as f32 / 72.0,
                 y_scale: dpi as f32 / 72.0,
-                width: Some(width as u16),
-                height: Some(height as u16),
+                width: Some(width),
+                height: Some(height),
                 bg_color: WHITE,
             },
         );

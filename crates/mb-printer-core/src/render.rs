@@ -5,6 +5,7 @@ use crate::document::{
 use crate::raster::{Dither, GrayRaster, MonoRaster};
 use crate::{
     capabilities::{Alignment, PrinterDefinition, Protocol},
+    limits::ProcessingLimits,
     protocol,
 };
 use font8x8::{BASIC_FONTS, UnicodeFonts};
@@ -39,6 +40,31 @@ impl Default for RenderOptions {
         }
     }
 }
+
+/// Resolve the canonical document dither extension for every host target.
+pub fn options_for_document(document: &Document) -> RenderOptions {
+    let setting = document.extensions.get("makersbrain.render:dither");
+    let algorithm = setting
+        .and_then(|value| value.get("algorithm"))
+        .and_then(serde_json::Value::as_str);
+    let threshold = setting
+        .and_then(|value| value.get("threshold"))
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|value| u8::try_from(value).ok())
+        .unwrap_or(128);
+    let dither = match algorithm {
+        Some("auto") => Dither::Auto,
+        Some("threshold") => Dither::Threshold(threshold),
+        Some("bayer") => Dither::Bayer4,
+        Some("floyd-steinberg") => Dither::FloydSteinberg,
+        Some("atkinson") => Dither::Atkinson,
+        Some(_) | None => RenderOptions::default().dither,
+    };
+    RenderOptions {
+        dither,
+        ..Default::default()
+    }
+}
 pub fn micrometres_to_dots(value: i64, dpi: u16) -> i64 {
     round_ratio(value as i128 * dpi as i128, 25_400)
 }
@@ -48,7 +74,28 @@ fn round_ratio(n: i128, d: i128) -> i64 {
     (sign * ((n + d / 2) / d)) as i64
 }
 pub fn render(doc: &Document, options: RenderOptions) -> Result<MonoRaster, RenderError> {
-    doc.validate().map_err(|e| {
+    render_with_limits(doc, options, &ProcessingLimits::default())
+}
+
+/// Render with an explicit decoded resource pixel limit.
+pub fn render_with_resource_limit(
+    doc: &Document,
+    options: RenderOptions,
+    max_resource_pixels: u64,
+) -> Result<MonoRaster, RenderError> {
+    let limits = ProcessingLimits {
+        max_resource_pixels,
+        ..ProcessingLimits::default()
+    };
+    render_with_limits(doc, options, &limits)
+}
+
+pub fn render_with_limits(
+    doc: &Document,
+    mut options: RenderOptions,
+    limits: &ProcessingLimits,
+) -> Result<MonoRaster, RenderError> {
+    doc.validate_with_limits(limits).map_err(|e| {
         RenderError::Validation(
             e.iter()
                 .map(ToString::to_string)
@@ -58,20 +105,44 @@ pub fn render(doc: &Document, options: RenderOptions) -> Result<MonoRaster, Rend
     })?;
     let w = micrometres_to_dots(doc.media.width, doc.media.dpi);
     let h = micrometres_to_dots(doc.media.height, doc.media.dpi);
-    if w <= 0 || h <= 0 || w as u64 * h as u64 > options.max_pixels {
+    let (Ok(width), Ok(height)) = (u32::try_from(w), u32::try_from(h)) else {
         return Err(RenderError::TooLarge);
-    }
-    let mut canvas = GrayRaster::new(w as u32, h as u32, 255);
+    };
+    options.max_pixels = options.max_pixels.min(limits.max_canvas_pixels);
+    let canvas_pixels = u64::from(width)
+        .checked_mul(u64::from(height))
+        .ok_or(RenderError::TooLarge)?;
+    let mut budget = RenderBudget::new(limits.max_total_pixels);
+    budget.add(canvas_pixels)?;
+    budget.add(canvas_pixels)?;
+    let mut canvas = GrayRaster::try_new(width, height, 255, options.max_pixels)
+        .map_err(|_| RenderError::TooLarge)?;
     let mut elements: Vec<_> = doc.elements.iter().collect();
     elements.sort_by_key(|e| common(e).z_order);
     for e in elements {
         if effectively_visible(e, doc) {
             let source = effective_zone(e, doc);
-            draw(&mut canvas, e, doc.media.dpi, doc, source)?;
+            draw(
+                &mut canvas,
+                e,
+                doc.media.dpi,
+                doc,
+                source,
+                limits,
+                &mut budget,
+            )?;
             if let Some(source) = source {
                 for zone in &doc.media.zones {
                     if zone.id != source && zone_clones(&doc.media.zones, &zone.id, source) {
-                        draw(&mut canvas, e, doc.media.dpi, doc, Some(&zone.id))?
+                        draw(
+                            &mut canvas,
+                            e,
+                            doc.media.dpi,
+                            doc,
+                            Some(&zone.id),
+                            limits,
+                            &mut budget,
+                        )?
                     }
                 }
             }
@@ -132,7 +203,16 @@ pub fn render_for_printer(
     printer: &PrinterDefinition,
     options: RenderOptions,
 ) -> Result<protocol::Raster, RenderError> {
-    let mut raster = render(doc, options)?;
+    render_for_printer_with_limits(doc, printer, options, &ProcessingLimits::default())
+}
+
+pub fn render_for_printer_with_limits(
+    doc: &Document,
+    printer: &PrinterDefinition,
+    options: RenderOptions,
+    limits: &ProcessingLimits,
+) -> Result<protocol::Raster, RenderError> {
+    let mut raster = render_with_limits(doc, options, limits)?;
     let brother_62x29 = printer.protocol == Protocol::Brother
         && ((doc.media.width.abs_diff(62_000) <= 1_500
             && doc.media.height.abs_diff(29_000) <= 1_500)
@@ -154,6 +234,12 @@ pub fn render_for_printer(
         Alignment::Center => crate::raster::Fit::Center,
         Alignment::Right => crate::raster::Fit::Right,
     };
+    let fitted_pixels = u64::from(head)
+        .checked_mul(u64::from(raster.height))
+        .ok_or(RenderError::TooLarge)?;
+    if fitted_pixels > limits.max_canvas_pixels || fitted_pixels > limits.max_total_pixels {
+        return Err(RenderError::TooLarge);
+    }
     let fitted = if brother_62x29 {
         raster.place_on_head(head, crate::raster::Fit::Right, -56, 0)
     } else {
@@ -187,11 +273,12 @@ fn fit_mono_to_box(image: &MonoRaster, width: u32, height: u32) -> Result<MonoRa
             height,
         )
     };
-    let mut scaled = MonoRaster {
-        width: scaled_width.max(1),
-        height: scaled_height.max(1),
-        pixels: vec![0; (scaled_width.max(1) * scaled_height.max(1)) as usize],
-    };
+    let mut scaled = MonoRaster::try_new(
+        scaled_width.max(1),
+        scaled_height.max(1),
+        u64::from(width) * u64::from(height),
+    )
+    .map_err(|_| RenderError::TooLarge)?;
     for y in 0..scaled.height {
         for x in 0..scaled.width {
             let source_x = u64::from(x) * u64::from(image.width) / u64::from(scaled.width);
@@ -200,11 +287,8 @@ fn fit_mono_to_box(image: &MonoRaster, width: u32, height: u32) -> Result<MonoRa
                 image.pixels[(source_y as u32 * image.width + source_x as u32) as usize];
         }
     }
-    let mut output = MonoRaster {
-        width,
-        height,
-        pixels: vec![0; (width * height) as usize],
-    };
+    let mut output = MonoRaster::try_new(width, height, u64::from(width) * u64::from(height))
+        .map_err(|_| RenderError::TooLarge)?;
     let left = (width - scaled.width) / 2;
     let top = (height - scaled.height) / 2;
     for y in 0..scaled.height {
@@ -236,6 +320,26 @@ struct Placement {
     w: i32,
     h: i32,
     rotation_millidegrees: i32,
+}
+struct RenderBudget {
+    pixels: u64,
+    limit: u64,
+}
+impl RenderBudget {
+    fn new(limit: u64) -> Self {
+        Self { pixels: 0, limit }
+    }
+    fn add(&mut self, pixels: u64) -> Result<(), RenderError> {
+        self.pixels = self
+            .pixels
+            .checked_add(pixels)
+            .ok_or(RenderError::TooLarge)?;
+        if self.pixels > self.limit {
+            Err(RenderError::TooLarge)
+        } else {
+            Ok(())
+        }
+    }
 }
 const TRIG_SCALE: i64 = 1_000_000_000;
 fn fixed_trig(millidegrees: i32) -> (i64, i64) {
@@ -340,16 +444,23 @@ fn draw(
     dpi: u16,
     doc: &Document,
     zone_override: Option<&str>,
+    limits: &ProcessingLimits,
+    budget: &mut RenderBudget,
 ) -> Result<(), RenderError> {
     if matches!(e, Element::Group { .. }) {
         return Ok(());
     }
     let placement = placement_px(common(e), dpi, doc, zone_override);
     if placement.rotation_millidegrees == 0 {
-        return draw_at(c, e, dpi, doc, placement);
+        return draw_at(c, e, dpi, doc, placement, limits, budget);
     }
-    let mut layer = GrayRaster::new(c.width, c.height, 255);
-    draw_at(&mut layer, e, dpi, doc, placement)?;
+    let pixels = u64::from(c.width)
+        .checked_mul(u64::from(c.height))
+        .ok_or(RenderError::TooLarge)?;
+    budget.add(pixels)?;
+    let mut layer = GrayRaster::try_new(c.width, c.height, 255, limits.max_canvas_pixels)
+        .map_err(|_| RenderError::TooLarge)?;
+    draw_at(&mut layer, e, dpi, doc, placement, limits, budget)?;
     rotate_layer(c, &layer, placement);
     Ok(())
 }
@@ -359,6 +470,8 @@ fn draw_at(
     dpi: u16,
     doc: &Document,
     placement: Placement,
+    limits: &ProcessingLimits,
+    budget: &mut RenderBudget,
 ) -> Result<(), RenderError> {
     let Placement { x, y, w, h, .. } = placement;
     match e {
@@ -429,8 +542,8 @@ fn draw_at(
                     .find(|r| r.id == *id)
                     .ok_or_else(|| RenderError::Resource(id.clone()))?;
                 let bytes = resource
-                    .decoded_bytes()
-                    .ok_or_else(|| RenderError::Font(id.clone()))?;
+                    .decoded_bytes_with_limits(limits)
+                    .map_err(|_| RenderError::Font(id.clone()))?;
                 text_embedded(c, layout, value, &bytes)?
             } else {
                 text(c, layout, value)
@@ -464,10 +577,13 @@ fn draw_at(
                 .iter()
                 .find(|r| r.id == *resource)
                 .ok_or_else(|| RenderError::Resource(resource.clone()))?;
-            let image = crate::resources::normalize(item, 100_000_000)
+            let image = crate::resources::normalize_with_limits(item, limits)
                 .map_err(|e| RenderError::Resource(e.to_string()))?;
+            budget.add(u64::from(image.width) * u64::from(image.height))?;
             let mut cropped = if let Some(bounds) = crop {
-                crop_source(&image, *bounds)
+                let cropped = crop_source(&image, *bounds, limits.max_resource_pixels)?;
+                budget.add(u64::from(cropped.width) * u64::from(cropped.height))?;
+                cropped
             } else {
                 image
             };
@@ -495,8 +611,9 @@ fn draw_at(
                 .iter()
                 .find(|r| r.id == *resource)
                 .ok_or_else(|| RenderError::Resource(resource.clone()))?;
-            let image = crate::resources::normalize(item, 100_000_000)
+            let image = crate::resources::normalize_with_limits(item, limits)
                 .map_err(|e| RenderError::Resource(e.to_string()))?;
+            budget.add(u64::from(image.width) * u64::from(image.height))?;
             paste_fit(
                 c,
                 &image,
@@ -588,18 +705,22 @@ fn zone_clones(zones: &[crate::document::Zone], candidate: &str, source: &str) -
     }
     false
 }
-fn crop_source(source: &GrayRaster, b: crate::document::Bounds) -> GrayRaster {
+fn crop_source(
+    source: &GrayRaster,
+    b: crate::document::Bounds,
+    max_pixels: u64,
+) -> Result<GrayRaster, RenderError> {
     let x = b.x.max(0).min(source.width as i64) as u32;
     let y = b.y.max(0).min(source.height as i64) as u32;
     let w = b.width.max(1).min(source.width.saturating_sub(x) as i64) as u32;
     let h = b.height.max(1).min(source.height.saturating_sub(y) as i64) as u32;
-    let mut out = GrayRaster::new(w, h, 255);
+    let mut out = GrayRaster::try_new(w, h, 255, max_pixels).map_err(|_| RenderError::TooLarge)?;
     for yy in 0..h {
         let from = ((y + yy) * source.width + x) as usize;
         let to = (yy * w) as usize;
         out.pixels[to..to + w as usize].copy_from_slice(&source.pixels[from..from + w as usize])
     }
-    out
+    Ok(out)
 }
 fn paste_fit(
     c: &mut GrayRaster,

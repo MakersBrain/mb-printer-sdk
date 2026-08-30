@@ -18,6 +18,10 @@ fn png_jpeg_and_svg_normalize_deterministically() {
         .unwrap();
     let p = resources::normalize(&resource("image/png", &png), 100).unwrap();
     assert_eq!((p.width, p.height), (2, 2));
+    assert!(matches!(
+        resources::normalize(&resource("image/png", &png), 1),
+        Err(resources::ResourceError::TooLarge)
+    ));
     let svg=br#"<svg xmlns="http://www.w3.org/2000/svg" width="4" height="3"><rect width="2" height="3" fill="black"/></svg>"#;
     let a = resources::normalize(&resource("image/svg+xml", svg), 100).unwrap();
     let b = resources::normalize(&resource("image/svg+xml", svg), 100).unwrap();

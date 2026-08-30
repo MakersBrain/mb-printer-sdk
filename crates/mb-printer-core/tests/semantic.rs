@@ -55,3 +55,28 @@ fn schema_value_constraints_are_enforced_by_runtime_validation() {
             .any(|e| matches!(e, ValidationError::ExtensionNamespace(_)))
     );
 }
+
+#[test]
+fn built_in_text_and_overflowing_bounds_are_rejected_without_panicking() {
+    let errors = validate(|value| {
+        value["elements"][1]
+            .as_object_mut()
+            .unwrap()
+            .remove("fontResource");
+        value["elements"][1]["fontSize"] = 0.into();
+    });
+    assert!(
+        errors
+            .iter()
+            .any(|error| matches!(error, ValidationError::Element(id) if id == "t"))
+    );
+
+    let errors = validate(|value| {
+        value["media"]["printableBounds"]["x"] = i64::MAX.into();
+    });
+    assert!(
+        errors
+            .iter()
+            .any(|error| matches!(error, ValidationError::Media))
+    );
+}

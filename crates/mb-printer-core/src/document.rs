@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+use crate::limits::ProcessingLimits;
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -256,6 +258,39 @@ impl Resource {
     pub fn decoded_bytes(&self) -> Option<Vec<u8>> {
         decode_base64(&self.data_base64)
     }
+
+    pub fn decoded_bytes_with_limits(
+        &self,
+        limits: &ProcessingLimits,
+    ) -> Result<Vec<u8>, ResourceDecodeError> {
+        let encoded = self.data_base64.len();
+        if encoded > limits.max_resource_bytes {
+            return Err(ResourceDecodeError::EncodedTooLarge);
+        }
+        let payload = base64_payload(&self.data_base64);
+        let estimated =
+            estimated_decoded_len(payload).ok_or(ResourceDecodeError::DecodedTooLarge)?;
+        if estimated > limits.max_decoded_resource_bytes {
+            return Err(ResourceDecodeError::DecodedTooLarge);
+        }
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(payload)
+            .map_err(|_| ResourceDecodeError::Invalid)?;
+        if decoded.len() > limits.max_decoded_resource_bytes {
+            return Err(ResourceDecodeError::DecodedTooLarge);
+        }
+        Ok(decoded)
+    }
+}
+
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum ResourceDecodeError {
+    #[error("encoded resource exceeds configured limit")]
+    EncodedTooLarge,
+    #[error("decoded resource exceeds configured limit")]
+    DecodedTooLarge,
+    #[error("invalid base64 resource")]
+    Invalid,
 }
 
 #[derive(Debug, Error, PartialEq)]
@@ -288,6 +323,8 @@ pub enum ValidationError {
     ResourceMedia(String),
     #[error("invalid element property: {0}")]
     Element(String),
+    #[error("document exceeds processing limit: {0}")]
+    Limit(&'static str),
 }
 
 impl Document {
@@ -295,7 +332,66 @@ impl Document {
         serde_json::from_str(input)
     }
     pub fn validate(&self) -> Result<(), Vec<ValidationError>> {
+        self.validate_with_limits(&ProcessingLimits::default())
+    }
+
+    pub fn validate_with_limits(
+        &self,
+        limits: &ProcessingLimits,
+    ) -> Result<(), Vec<ValidationError>> {
+        let _span = tracing::debug_span!(
+            "label.validate",
+            element_count = self.elements.len(),
+            resource_count = self.resources.len()
+        )
+        .entered();
         let mut e = Vec::new();
+        if self.elements.len() > limits.max_elements {
+            e.push(ValidationError::Limit("elements"));
+        }
+        if self.resources.len() > limits.max_resources {
+            e.push(ValidationError::Limit("resources"));
+        }
+        if !e.is_empty() {
+            return Err(e);
+        }
+        let mut total_encoded = 0usize;
+        let mut total_decoded = 0usize;
+        for resource in &self.resources {
+            total_encoded = match total_encoded.checked_add(resource.data_base64.len()) {
+                Some(value) => value,
+                None => {
+                    e.push(ValidationError::Limit("total encoded resource bytes"));
+                    break;
+                }
+            };
+            let Some(decoded) = estimated_decoded_len(base64_payload(&resource.data_base64)) else {
+                e.push(ValidationError::Limit("total decoded resource bytes"));
+                break;
+            };
+            total_decoded = match total_decoded.checked_add(decoded) {
+                Some(value) => value,
+                None => {
+                    e.push(ValidationError::Limit("total decoded resource bytes"));
+                    break;
+                }
+            };
+            if resource.data_base64.len() > limits.max_resource_bytes {
+                e.push(ValidationError::Limit("encoded resource bytes"));
+            }
+            if decoded > limits.max_decoded_resource_bytes {
+                e.push(ValidationError::Limit("decoded resource bytes"));
+            }
+        }
+        if total_encoded > limits.max_output_bytes {
+            e.push(ValidationError::Limit("total encoded resource bytes"));
+        }
+        if total_decoded > limits.max_output_bytes {
+            e.push(ValidationError::Limit("total decoded resource bytes"));
+        }
+        if !e.is_empty() {
+            return Err(e);
+        }
         if self.version != 4 {
             e.push(ValidationError::Version)
         };
@@ -310,8 +406,7 @@ impl Document {
             || b.height <= 0
             || b.x < 0
             || b.y < 0
-            || b.x + b.width > self.media.width
-            || b.y + b.height > self.media.height
+            || !bounds_fit(b, self.media.width, self.media.height)
         {
             e.push(ValidationError::Media)
         }
@@ -331,14 +426,22 @@ impl Document {
             {
                 e.push(ValidationError::ResourceHash(r.id.clone()))
             }
-            match decode_base64(&r.data_base64) {
-                Some(bytes) => {
+            match r.decoded_bytes_with_limits(limits) {
+                Ok(bytes) => {
                     let actual = format!("{:x}", Sha256::digest(bytes));
                     if actual != r.sha256 {
                         e.push(ValidationError::ResourceHash(r.id.clone()))
                     }
                 }
-                None => e.push(ValidationError::ResourceEncoding(r.id.clone())),
+                Err(ResourceDecodeError::Invalid) => {
+                    e.push(ValidationError::ResourceEncoding(r.id.clone()))
+                }
+                Err(ResourceDecodeError::EncodedTooLarge) => {
+                    e.push(ValidationError::Limit("encoded resource bytes"))
+                }
+                Err(ResourceDecodeError::DecodedTooLarge) => {
+                    e.push(ValidationError::Limit("decoded resource bytes"))
+                }
             }
         }
         let mut zone_ids = BTreeSet::new();
@@ -351,8 +454,7 @@ impl Document {
                 || b.height <= 0
                 || b.x < 0
                 || b.y < 0
-                || b.x + b.width > self.media.width
-                || b.y + b.height > self.media.height
+                || !bounds_fit(b, self.media.width, self.media.height)
             {
                 e.push(ValidationError::Zone(z.id.clone()))
             }
@@ -445,14 +547,15 @@ impl Document {
             }
             match x {
                 Element::Text {
-                    font_resource: Some(id),
+                    font_resource,
                     font_size,
                     ..
                 } => {
                     if *font_size <= 0 {
                         e.push(ValidationError::Element(c.id.clone()))
                     }
-                    if let Some(r) = resource_map.get(id.as_str())
+                    if let Some(id) = font_resource
+                        && let Some(r) = resource_map.get(id.as_str())
                         && !r.media_type.starts_with("font/")
                     {
                         e.push(ValidationError::ResourceMedia(id.clone()))
@@ -542,8 +645,34 @@ impl Document {
         if e.is_empty() { Ok(()) } else { Err(e) }
     }
 }
+
+fn bounds_fit(bounds: Bounds, width: i64, height: i64) -> bool {
+    bounds
+        .x
+        .checked_add(bounds.width)
+        .is_some_and(|right| right <= width)
+        && bounds
+            .y
+            .checked_add(bounds.height)
+            .is_some_and(|bottom| bottom <= height)
+}
+
 impl Element {
-    fn common(&self) -> &Common {
+    pub(crate) fn common(&self) -> &Common {
+        match self {
+            Self::Text { common, .. }
+            | Self::Image { common, .. }
+            | Self::Svg { common, .. }
+            | Self::Line { common, .. }
+            | Self::Rectangle { common, .. }
+            | Self::Ellipse { common, .. }
+            | Self::Triangle { common, .. }
+            | Self::Barcode { common, .. }
+            | Self::QrCode { common, .. }
+            | Self::Group { common, .. } => common,
+        }
+    }
+    pub(crate) fn common_mut(&mut self) -> &mut Common {
         match self {
             Self::Text { common, .. }
             | Self::Image { common, .. }
@@ -567,32 +696,17 @@ impl Element {
 }
 
 fn decode_base64(s: &str) -> Option<Vec<u8>> {
-    let s = s
-        .strip_prefix("data:")
-        .and_then(|x| x.split_once(",").map(|x| x.1))
-        .unwrap_or(s);
-    let mut out = Vec::new();
-    let mut buf = 0u32;
-    let mut bits = 0;
-    for c in s.bytes() {
-        if c == b'=' {
-            break;
-        }
-        let v = match c {
-            b'A'..=b'Z' => c - b'A',
-            b'a'..=b'z' => c - b'a' + 26,
-            b'0'..=b'9' => c - b'0' + 52,
-            b'+' => 62,
-            b'/' => 63,
-            b'\r' | b'\n' => continue,
-            _ => return None,
-        };
-        buf = (buf << 6) | v as u32;
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            out.push((buf >> bits) as u8)
-        }
-    }
-    Some(out)
+    base64::engine::general_purpose::STANDARD
+        .decode(base64_payload(s))
+        .ok()
+}
+
+fn base64_payload(s: &str) -> &str {
+    s.strip_prefix("data:")
+        .and_then(|value| value.split_once(',').map(|(_, payload)| payload))
+        .unwrap_or(s)
+}
+
+fn estimated_decoded_len(payload: &str) -> Option<usize> {
+    payload.len().checked_add(3)?.checked_div(4)?.checked_mul(3)
 }
