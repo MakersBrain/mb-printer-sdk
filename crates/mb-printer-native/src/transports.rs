@@ -253,6 +253,17 @@ pub mod serial {
                 let mut ports = serialport::available_ports()
                     .map_err(|error| error.to_string())?
                     .into_iter()
+                    .filter(|port| {
+                        #[cfg(unix)]
+                        {
+                            Path::new(&port.port_name).exists()
+                        }
+                        #[cfg(not(unix))]
+                        {
+                            let _ = port;
+                            true
+                        }
+                    })
                     .map(|port| {
                         let name = match port.port_type {
                             serialport::SerialPortType::UsbPort(info) => info.product,
@@ -1624,6 +1635,7 @@ pub mod input {
 pub mod rfcomm {
     use super::*;
     use std::{
+        io::Read,
         os::fd::{FromRawFd, OwnedFd},
         process::Command,
     };
@@ -1657,6 +1669,7 @@ pub mod rfcomm {
     }
     pub struct RfcommTransport {
         inner: FileTransport,
+        response_limit: usize,
         pub address: String,
         pub channel: u8,
     }
@@ -1725,6 +1738,7 @@ pub mod rfcomm {
                     file,
                     payload_limit,
                 },
+                response_limit: 64,
                 address: address.to_owned(),
                 channel,
             })
@@ -1744,7 +1758,46 @@ pub mod rfcomm {
             self.inner.delay_monotonic(milliseconds)
         }
         fn wait_response(&mut self, timeout_ms: u64) -> Result<WaitOutcome, String> {
-            self.inner.wait_response(timeout_ms)
+            let mut descriptor = libc::pollfd {
+                fd: std::os::fd::AsRawFd::as_raw_fd(&self.inner.file),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            let timeout_ms = i32::try_from(timeout_ms).unwrap_or(i32::MAX);
+            // SAFETY: descriptor points to one initialized pollfd for the
+            // duration of the call.
+            let ready = unsafe { libc::poll(&mut descriptor, 1, timeout_ms) };
+            if ready < 0 {
+                return Err(std::io::Error::last_os_error().to_string());
+            }
+            if ready == 0 {
+                return Ok(WaitOutcome::Timeout);
+            }
+            if descriptor.revents & libc::POLLNVAL != 0 {
+                return Err("RFCOMM socket is not valid".into());
+            }
+            if descriptor.revents & (libc::POLLERR | libc::POLLHUP) != 0
+                && descriptor.revents & libc::POLLIN == 0
+            {
+                return Ok(WaitOutcome::Unavailable);
+            }
+            let mut bytes = vec![0; self.response_limit.max(1)];
+            match self.inner.file.read(&mut bytes) {
+                Ok(0) => Ok(WaitOutcome::Unavailable),
+                Ok(length) => {
+                    bytes.truncate(length);
+                    Ok(WaitOutcome::Response(bytes))
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                    ) =>
+                {
+                    Ok(WaitOutcome::Timeout)
+                }
+                Err(error) => Err(error.to_string()),
+            }
         }
     }
 }

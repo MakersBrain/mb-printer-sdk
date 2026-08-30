@@ -272,3 +272,23 @@ fn a_split_brother_status_frame_is_reassembled() {
     let progress = execute(&plan, &mut transport).unwrap();
     assert_eq!(progress.responses.last().map(Vec::len), Some(32));
 }
+
+#[test]
+fn phomemo_query_echo_is_ignored_before_notification() {
+    let plan = Plan {
+        protocol: mb_printer_core::capabilities::Protocol::M110,
+        source_commit: String::new(),
+        actions: vec![Action::WaitForResponse {
+            timeout_ms: 1,
+            fallback_delay_ms: 0,
+            validation: ResponseValidation::PhomemoNotification,
+        }],
+    };
+    let mut transport = Mock {
+        frames: vec![vec![0x1f, 0x11, 0x08], vec![0x1a, 0x04, 100]],
+        exhaust: true,
+        ..Default::default()
+    };
+    let progress = execute(&plan, &mut transport).unwrap();
+    assert_eq!(progress.responses, vec![vec![0x1a, 0x04, 100]]);
+}

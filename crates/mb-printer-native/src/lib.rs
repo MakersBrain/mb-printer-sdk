@@ -164,7 +164,7 @@ pub fn execute_with_timing<T: Transport>(
                     }
                     outcome
                 }
-                Ok(WaitOutcome::Unavailable) if *fallback_delay_ms > 0 => {
+                Ok(WaitOutcome::Unavailable | WaitOutcome::Timeout) if *fallback_delay_ms > 0 => {
                     t.delay_monotonic(timing.apply(*fallback_delay_ms));
                     Ok(())
                 }
@@ -200,26 +200,45 @@ fn collect_response<T: Transport>(
     let expected = match validation {
         ResponseValidation::BrotherStatus32 => 32,
         ResponseValidation::AnyNotification => 1,
+        ResponseValidation::PhomemoNotification => 3,
     };
     let mut bytes: Vec<u8> = Vec::new();
     for _ in 0..16 {
         match t.wait_response(timeout_ms)? {
             WaitOutcome::Response(chunk) => {
                 bytes.extend(chunk);
+                if matches!(validation, ResponseValidation::PhomemoNotification) {
+                    if let Some(start) = bytes.iter().position(|byte| *byte == 0x1a)
+                        && bytes.len() - start >= expected
+                    {
+                        return Ok(WaitOutcome::Response(bytes.split_off(start)));
+                    }
+                    continue;
+                }
                 if bytes.len() >= expected {
                     return Ok(WaitOutcome::Response(bytes));
                 }
             }
             outcome => {
-                return Ok(if bytes.is_empty() {
-                    outcome
-                } else {
-                    WaitOutcome::Response(bytes)
-                });
+                return Ok(
+                    if bytes.is_empty()
+                        || matches!(validation, ResponseValidation::PhomemoNotification)
+                    {
+                        outcome
+                    } else {
+                        WaitOutcome::Response(bytes)
+                    },
+                );
             }
         }
     }
-    Ok(WaitOutcome::Response(bytes))
+    Ok(
+        if matches!(validation, ResponseValidation::PhomemoNotification) {
+            WaitOutcome::Timeout
+        } else {
+            WaitOutcome::Response(bytes)
+        },
+    )
 }
 
 /// Process-local single-attempt guard. Keys must be durable job IDs supplied by the caller.
@@ -316,6 +335,7 @@ fn fail(p: &Progress, message: String) -> ExecuteError {
 fn validate(v: ResponseValidation, b: &[u8], p: &Progress) -> Result<(), ExecuteError> {
     match v {
         ResponseValidation::AnyNotification if !b.is_empty() => Ok(()),
+        ResponseValidation::PhomemoNotification if b.len() >= 3 && b[0] == 0x1a => Ok(()),
         ResponseValidation::BrotherStatus32
             if b.len() == 32 && b.starts_with(&[0x80, 0x20, 0x42]) =>
         {

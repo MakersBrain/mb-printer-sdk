@@ -40,6 +40,7 @@ pub enum Boundary {
 #[serde(rename_all = "kebab-case")]
 pub enum ResponseValidation {
     AnyNotification,
+    PhomemoNotification,
     BrotherStatus32,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -76,8 +77,9 @@ pub struct Options {
     /// The transport streams a whole job, as an RFCOMM socket or a bulk endpoint
     /// does, so the per-chunk pacing the Bluetooth drivers need is dead time.
     pub streaming: bool,
-    /// Send the raster LZO-compressed. Phomemo firmware accepts it on the M110
-    /// family; the vendor application builds it but never reaches the code.
+    /// Send the raster LZO-compressed. This mirrors Print Master's ordinary
+    /// monochrome `img2NvCompress` path; its `GS 0xbc` red/black path is a
+    /// different raster format and must not be substituted here.
     pub lzo: bool,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -134,6 +136,7 @@ pub fn status_plan(printer: &PrinterDefinition) -> Result<Plan, PlanError> {
                 vec![0; printer.invalidate_bytes as usize],
             );
             cmd(&mut a, "ESC @ init", vec![0x1b, 0x40]);
+            cmd(&mut a, "switch to raster mode", vec![0x1b, 0x69, 0x61, 1]);
             // The printer discards a status request that arrives while it is
             // still consuming the invalidate/init preamble.
             delay(&mut a, 100);
@@ -158,7 +161,7 @@ pub fn status_plan(printer: &PrinterDefinition) -> Result<Plan, PlanError> {
                     timeout_ms: 800,
                     // A model that does not answer one query must not fail the rest.
                     fallback_delay_ms: 100,
-                    validation: ResponseValidation::AnyNotification,
+                    validation: ResponseValidation::PhomemoNotification,
                 });
             }
         }
@@ -614,8 +617,8 @@ pub fn phomemo_parse_status(frames: &[Vec<u8>]) -> PhomemoStatus {
             }
             0x05 => {
                 status.cover = Some(match value {
-                    0x98 => "open",
-                    0x99 => "closed",
+                    0x98 => "closed",
+                    0x99 => "open",
                     _ => "unknown",
                 })
             }
