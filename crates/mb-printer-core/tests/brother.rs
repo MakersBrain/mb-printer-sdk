@@ -167,7 +167,11 @@ fn phomemo_status_plan_queries_and_decodes_notification_frames() {
     assert_eq!(status.battery, Some(5));
     assert_eq!(status.cover, Some("open"));
     assert_eq!(status.paper, Some("out"));
-    assert_eq!(status.label, Some("gap"));
+    assert_eq!(status.label, Some("black-mark"));
+    assert_eq!(
+        protocol::phomemo_parse_status(&[vec![0x1a, 0x0c, 0x02]]).label,
+        Some("gap")
+    );
     assert_eq!(status.firmware.as_deref(), Some("1.2.3"));
     assert_eq!(status.serial.as_deref(), Some("MB1"));
     assert_eq!(status.errors, vec!["no media", "cover open"]);

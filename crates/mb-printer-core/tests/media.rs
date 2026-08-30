@@ -26,22 +26,40 @@ fn brother_offers_the_dk_catalogue_including_wide_only_stock() {
 }
 
 #[test]
-fn a_roll_wider_than_the_head_is_not_offered() {
-    // M110 prints 48mm, so the 50 and 60mm labels belong to the wider models.
+fn a_model_is_offered_only_the_stock_it_accepts() {
+    // The M110 prints 48mm but takes 50mm media, which the vendor states; the
+    // 60 and 70mm stock belongs to the wider M200.
     let narrow = ids("m110");
+    assert!(narrow.iter().any(|id| id == "50x80"));
     assert!(narrow.iter().any(|id| id == "40x30"));
-    assert!(!narrow.iter().any(|id| id == "50x80"));
     assert!(!narrow.iter().any(|id| id == "60x40"));
-    assert!(ids("m200").iter().any(|id| id == "60x40"));
+    assert!(!narrow.iter().any(|id| id == "70x80"));
+    let wide = ids("m200");
+    assert!(wide.iter().any(|id| id == "70x80"));
+    assert_eq!(
+        media::max_media_width_mm(&capabilities::by_id("m110").unwrap()),
+        Some(50.)
+    );
 }
 
 #[test]
 fn tape_models_only_offer_the_widths_they_accept() {
-    assert_eq!(ids("p12"), vec!["40x12", "30x12", "22x12", "12x12"]);
-    let a30 = ids("a30");
-    assert!(a30.iter().any(|id| id == "22x14"));
-    assert!(a30.iter().any(|id| id == "15x15"));
-    assert!(!ids("m110").iter().any(|id| id.ends_with("x14")));
+    let tape_widths = |model: &str| {
+        let printer = capabilities::by_id(model).unwrap();
+        let mut widths: Vec<u16> = media::presets_for(&printer)
+            .into_iter()
+            .filter_map(|preset| preset.tape_width_mm)
+            .collect();
+        widths.sort_unstable();
+        widths.dedup();
+        widths
+    };
+    // The P12 takes 12mm tape, so nothing wider is offered; the A30 also takes 14 and 15.
+    assert_eq!(tape_widths("p12"), vec![6, 12]);
+    let a30 = tape_widths("a30");
+    assert!(a30.contains(&14) && a30.contains(&15));
+    // Label stock is not tape and carries no tape width.
+    assert!(tape_widths("m110").is_empty());
 }
 
 #[test]
