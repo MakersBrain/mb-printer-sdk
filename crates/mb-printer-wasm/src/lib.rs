@@ -5,6 +5,45 @@ use mb_printer_core::{
 };
 use std::collections::BTreeMap;
 
+fn document_render_options(document: &Document) -> render::RenderOptions {
+    let setting = document.extensions.get("makersbrain.render:dither");
+    let algorithm = setting
+        .and_then(|value| value.get("algorithm"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("auto");
+    let threshold = setting
+        .and_then(|value| value.get("threshold"))
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|value| u8::try_from(value).ok())
+        .unwrap_or(128);
+    let dither = match algorithm {
+        "threshold" => mb_printer_core::raster::Dither::Threshold(threshold),
+        "bayer" => mb_printer_core::raster::Dither::Bayer4,
+        "floyd-steinberg" => mb_printer_core::raster::Dither::FloydSteinberg,
+        "atkinson" => mb_printer_core::raster::Dither::Atkinson,
+        _ => mb_printer_core::raster::Dither::Auto,
+    };
+    render::RenderOptions {
+        dither,
+        ..Default::default()
+    }
+}
+
+#[cfg(test)]
+mod render_option_tests {
+    use super::*;
+
+    #[test]
+    fn reads_non_destructive_dither_profile_from_document_extension() {
+        let input = r#"{"version":4,"name":"dither","media":{"width":1000,"height":1000,"unit":"micrometre","dpi":203,"orientation":"portrait","printableBounds":{"x":0,"y":0,"width":1000,"height":1000},"shape":"rectangle"},"coordinateSystem":{"unit":"micrometre","origin":"top-left","rounding":"half-away-from-zero"},"elements":[],"resources":[],"fields":[],"extensions":{"makersbrain.render:dither":{"algorithm":"atkinson","threshold":140}}}"#;
+        let document = Document::from_json(input).unwrap();
+        assert_eq!(
+            document_render_options(&document).dither,
+            mb_printer_core::raster::Dither::Atkinson
+        );
+    }
+}
+
 pub fn validate_document_json(input: &str) -> String {
     match Document::from_json(input) {
         Ok(d) => match d.validate() {
@@ -101,19 +140,19 @@ pub fn protocol_plan_json(
 }
 pub fn render_packed(input: &str) -> Result<Vec<u8>, String> {
     let doc = Document::from_json(input).map_err(|e| e.to_string())?;
-    render::render(&doc, Default::default())
+    render::render(&doc, document_render_options(&doc))
         .map_err(|e| e.to_string())?
         .pack_msb()
         .map_err(|e| e.to_string())
 }
 pub fn render_png(input: &str) -> Result<Vec<u8>, String> {
     let doc = Document::from_json(input).map_err(|e| e.to_string())?;
-    let raster = render::render(&doc, Default::default()).map_err(|e| e.to_string())?;
+    let raster = render::render(&doc, document_render_options(&doc)).map_err(|e| e.to_string())?;
     export::png(&raster, doc.media.dpi).map_err(|e| e.to_string())
 }
 pub fn render_pdf(input: &str) -> Result<Vec<u8>, String> {
     let doc = Document::from_json(input).map_err(|e| e.to_string())?;
-    let raster = render::render(&doc, Default::default()).map_err(|e| e.to_string())?;
+    let raster = render::render(&doc, document_render_options(&doc)).map_err(|e| e.to_string())?;
     export::pdf_physical(&raster, doc.media.width, doc.media.height).map_err(|e| e.to_string())
 }
 pub fn render_batch_pdf(input: &str) -> Result<Vec<u8>, String> {
@@ -127,7 +166,10 @@ pub fn render_batch_pdf(input: &str) -> Result<Vec<u8>, String> {
                 .collect::<Vec<_>>()
                 .join("; ")
         })?;
-        rasters.push(render::render(document, Default::default()).map_err(|e| e.to_string())?);
+        rasters.push(
+            render::render(document, document_render_options(document))
+                .map_err(|e| e.to_string())?,
+        );
     }
     let pages = rasters
         .iter()
@@ -211,7 +253,7 @@ pub fn render_protocol_plan_with_options(
             .join("; ")
     })?;
     let printer = capabilities::by_id(model).ok_or_else(|| format!("unknown model: {model}"))?;
-    let raster = render::render_for_printer(&doc, &printer, Default::default())
+    let raster = render::render_for_printer(&doc, &printer, document_render_options(&doc))
         .map_err(|e| e.to_string())?;
     let mut options: protocol::Options =
         serde_json::from_str(options_json).map_err(|e| e.to_string())?;
