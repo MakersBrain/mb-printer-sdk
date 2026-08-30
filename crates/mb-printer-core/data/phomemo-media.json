@@ -1,0 +1,361 @@
+{
+  "_comment": "Phomemo-family media. Hand-maintained: these printers ship no descriptor to import.",
+  "groups": {
+    "m-series": [
+      {
+        "id": "12x40",
+        "name": "12 × 40mm",
+        "widthMm": 12.0,
+        "heightMm": 40.0,
+        "shape": "rectangle"
+      },
+      {
+        "id": "15x30",
+        "name": "15 × 30mm",
+        "widthMm": 15.0,
+        "heightMm": 30.0,
+        "shape": "rectangle"
+      },
+      {
+        "id": "20x30",
+        "name": "20 × 30mm",
+        "widthMm": 20.0,
+        "heightMm": 30.0,
+        "shape": "rectangle"
+      },
+      {
+        "id": "25x50",
+        "name": "25 × 50mm",
+        "widthMm": 25.0,
+        "heightMm": 50.0,
+        "shape": "rectangle"
+      },
+      {
+        "id": "30x20",
+        "name": "30 × 20mm",
+        "widthMm": 30.0,
+        "heightMm": 20.0,
+        "shape": "rectangle"
+      },
+      {
+        "id": "30x40",
+        "name": "30 × 40mm",
+        "widthMm": 30.0,
+        "heightMm": 40.0,
+        "shape": "rectangle"
+      },
+      {
+        "id": "40x30",
+        "name": "40 × 30mm",
+        "widthMm": 40.0,
+        "heightMm": 30.0,
+        "shape": "rectangle"
+      },
+      {
+        "id": "40x60",
+        "name": "40 × 60mm",
+        "widthMm": 40.0,
+        "heightMm": 60.0,
+        "shape": "rectangle"
+      },
+      {
+        "id": "50x25",
+        "name": "50 × 25mm",
+        "widthMm": 50.0,
+        "heightMm": 25.0,
+        "shape": "rectangle"
+      },
+      {
+        "id": "50x30",
+        "name": "50 × 30mm",
+        "widthMm": 50.0,
+        "heightMm": 30.0,
+        "shape": "rectangle"
+      },
+      {
+        "id": "50x80",
+        "name": "50 × 80mm",
+        "widthMm": 50.0,
+        "heightMm": 80.0,
+        "shape": "rectangle"
+      },
+      {
+        "id": "60x40",
+        "name": "60 × 40mm",
+        "widthMm": 60.0,
+        "heightMm": 40.0,
+        "shape": "rectangle"
+      },
+      {
+        "id": "d20",
+        "name": "20mm round",
+        "widthMm": 20.0,
+        "heightMm": 20.0,
+        "shape": "round"
+      },
+      {
+        "id": "d30",
+        "name": "30mm round",
+        "widthMm": 30.0,
+        "heightMm": 30.0,
+        "shape": "round"
+      },
+      {
+        "id": "d40",
+        "name": "40mm round",
+        "widthMm": 40.0,
+        "heightMm": 40.0,
+        "shape": "round"
+      },
+      {
+        "id": "d50",
+        "name": "50mm round",
+        "widthMm": 50.0,
+        "heightMm": 50.0,
+        "shape": "round"
+      }
+    ],
+    "d-series": [
+      {
+        "id": "40x12",
+        "name": "40 × 12mm",
+        "widthMm": 40.0,
+        "heightMm": 12.0,
+        "shape": "rectangle"
+      },
+      {
+        "id": "30x12",
+        "name": "30 × 12mm",
+        "widthMm": 30.0,
+        "heightMm": 12.0,
+        "shape": "rectangle"
+      },
+      {
+        "id": "22x12",
+        "name": "22 × 12mm",
+        "widthMm": 22.0,
+        "heightMm": 12.0,
+        "shape": "rectangle"
+      },
+      {
+        "id": "12x12",
+        "name": "12 × 12mm",
+        "widthMm": 12.0,
+        "heightMm": 12.0,
+        "shape": "rectangle"
+      },
+      {
+        "id": "30x14",
+        "name": "30 × 14mm",
+        "widthMm": 30.0,
+        "heightMm": 14.0,
+        "shape": "rectangle"
+      },
+      {
+        "id": "22x14",
+        "name": "22 × 14mm",
+        "widthMm": 22.0,
+        "heightMm": 14.0,
+        "shape": "rectangle"
+      },
+      {
+        "id": "40x15",
+        "name": "40 × 15mm",
+        "widthMm": 40.0,
+        "heightMm": 15.0,
+        "shape": "rectangle"
+      },
+      {
+        "id": "30x15",
+        "name": "30 × 15mm",
+        "widthMm": 30.0,
+        "heightMm": 15.0,
+        "shape": "rectangle"
+      },
+      {
+        "id": "40x12c",
+        "name": "40 × 12mm continuous",
+        "widthMm": 40.0,
+        "heightMm": 0.0,
+        "shape": "continuous"
+      },
+      {
+        "id": "30x12c",
+        "name": "30 × 12mm continuous",
+        "widthMm": 30.0,
+        "heightMm": 0.0,
+        "shape": "continuous"
+      },
+      {
+        "id": "22x12c",
+        "name": "22 × 12mm continuous",
+        "widthMm": 22.0,
+        "heightMm": 0.0,
+        "shape": "continuous"
+      },
+      {
+        "id": "40x15c",
+        "name": "40 × 15mm continuous",
+        "widthMm": 40.0,
+        "heightMm": 0.0,
+        "shape": "continuous"
+      },
+      {
+        "id": "30x15c",
+        "name": "30 × 15mm continuous",
+        "widthMm": 30.0,
+        "heightMm": 0.0,
+        "shape": "continuous"
+      },
+      {
+        "id": "d14",
+        "name": "14mm round",
+        "widthMm": 14.0,
+        "heightMm": 14.0,
+        "shape": "round"
+      }
+    ],
+    "tape": [
+      {
+        "id": "40x12",
+        "name": "40 × 12mm tape",
+        "widthMm": 40.0,
+        "heightMm": 0.0,
+        "shape": "continuous",
+        "tapeWidthMm": 12
+      },
+      {
+        "id": "30x12",
+        "name": "30 × 12mm tape",
+        "widthMm": 30.0,
+        "heightMm": 0.0,
+        "shape": "continuous",
+        "tapeWidthMm": 12
+      },
+      {
+        "id": "22x12",
+        "name": "22 × 12mm tape",
+        "widthMm": 22.0,
+        "heightMm": 0.0,
+        "shape": "continuous",
+        "tapeWidthMm": 12
+      },
+      {
+        "id": "12x12",
+        "name": "12 × 12mm tape",
+        "widthMm": 12.0,
+        "heightMm": 0.0,
+        "shape": "continuous",
+        "tapeWidthMm": 12
+      },
+      {
+        "id": "40x14",
+        "name": "40 × 14mm tape",
+        "widthMm": 40.0,
+        "heightMm": 0.0,
+        "shape": "continuous",
+        "tapeWidthMm": 14
+      },
+      {
+        "id": "30x14",
+        "name": "30 × 14mm tape",
+        "widthMm": 30.0,
+        "heightMm": 0.0,
+        "shape": "continuous",
+        "tapeWidthMm": 14
+      },
+      {
+        "id": "22x14",
+        "name": "22 × 14mm tape",
+        "widthMm": 22.0,
+        "heightMm": 0.0,
+        "shape": "continuous",
+        "tapeWidthMm": 14
+      },
+      {
+        "id": "14x14",
+        "name": "14 × 14mm tape",
+        "widthMm": 14.0,
+        "heightMm": 0.0,
+        "shape": "continuous",
+        "tapeWidthMm": 14
+      },
+      {
+        "id": "40x15",
+        "name": "40 × 15mm tape",
+        "widthMm": 40.0,
+        "heightMm": 0.0,
+        "shape": "continuous",
+        "tapeWidthMm": 15
+      },
+      {
+        "id": "30x15",
+        "name": "30 × 15mm tape",
+        "widthMm": 30.0,
+        "heightMm": 0.0,
+        "shape": "continuous",
+        "tapeWidthMm": 15
+      },
+      {
+        "id": "22x15",
+        "name": "22 × 15mm tape",
+        "widthMm": 22.0,
+        "heightMm": 0.0,
+        "shape": "continuous",
+        "tapeWidthMm": 15
+      },
+      {
+        "id": "15x15",
+        "name": "15 × 15mm tape",
+        "widthMm": 15.0,
+        "heightMm": 0.0,
+        "shape": "continuous",
+        "tapeWidthMm": 15
+      }
+    ],
+    "pm241": [
+      {
+        "id": "102x152",
+        "name": "102 × 152mm (4 × 6in)",
+        "widthMm": 102.0,
+        "heightMm": 152.0,
+        "shape": "rectangle"
+      },
+      {
+        "id": "102x102",
+        "name": "102 × 102mm (4 × 4in)",
+        "widthMm": 102.0,
+        "heightMm": 102.0,
+        "shape": "rectangle"
+      },
+      {
+        "id": "102x76",
+        "name": "102 × 76mm (4 × 3in)",
+        "widthMm": 102.0,
+        "heightMm": 76.0,
+        "shape": "rectangle"
+      },
+      {
+        "id": "102x51",
+        "name": "102 × 51mm (4 × 2in)",
+        "widthMm": 102.0,
+        "heightMm": 51.0,
+        "shape": "rectangle"
+      },
+      {
+        "id": "100x150",
+        "name": "100 × 150mm",
+        "widthMm": 100.0,
+        "heightMm": 150.0,
+        "shape": "rectangle"
+      },
+      {
+        "id": "100x100",
+        "name": "100 × 100mm",
+        "widthMm": 100.0,
+        "heightMm": 100.0,
+        "shape": "rectangle"
+      }
+    ]
+  }
+}

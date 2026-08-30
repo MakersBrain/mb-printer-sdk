@@ -6,6 +6,7 @@ pub mod document;
 pub mod export;
 pub mod importer;
 pub mod laposte;
+pub mod media;
 pub mod pdf_import;
 pub mod protocol;
 pub mod raster;

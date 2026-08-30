@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #![forbid(unsafe_code)]
 use mb_printer_core::{
-    Document, capabilities, export, importer, pdf_import, protocol, render, template,
+    Document, capabilities, export, importer, media, pdf_import, protocol, render, template,
 };
 use std::collections::BTreeMap;
 
@@ -164,6 +164,17 @@ pub fn extract_laposte_pdf_json(code: &str, bytes: Vec<u8>, dpi: u16) -> Result<
     let stamps = mb_printer_core::laposte::extract(&pages, code).map_err(|e| e.to_string())?;
     let values:Vec<_>=stamps.into_iter().map(|s|serde_json::json!({"page":s.page,"sourcePage":s.page,"slot":s.slot,"widthUm":s.width_um,"heightUm":s.height_um,"rasterWidth":s.raster.width,"rasterHeight":s.raster.height,"pixels":s.raster.pixels})).collect();
     serde_json::to_string(&values).map_err(|e| e.to_string())
+}
+/// Every media a model can carry, already filtered by head width and tape width.
+pub fn media_presets_json(model: &str) -> Result<String, String> {
+    let printer = capabilities::by_id(model).ok_or_else(|| format!("unknown model: {model}"))?;
+    serde_json::to_string(&media::presets_for(&printer)).map_err(|e| e.to_string())
+}
+/// Names the media a printer reported, or `null` when nothing matches.
+pub fn match_media_json(model: &str, width_mm: f64, height_mm: f64) -> Result<String, String> {
+    let printer = capabilities::by_id(model).ok_or_else(|| format!("unknown model: {model}"))?;
+    serde_json::to_string(&media::match_media(&printer, width_mm, height_mm))
+        .map_err(|e| e.to_string())
 }
 /// Document-free plan that only asks the printer for its status.
 pub fn status_plan_json(model: &str) -> Result<String, String> {
@@ -335,6 +346,14 @@ mod bindings {
     #[wasm_bindgen(js_name=extractLaPostePdf)]
     pub fn extract_laposte_pdf(code: &str, bytes: Vec<u8>, dpi: u16) -> Result<String, JsValue> {
         super::extract_laposte_pdf_json(code, bytes, dpi).map_err(|e| JsValue::from_str(&e))
+    }
+    #[wasm_bindgen(js_name=mediaPresets)]
+    pub fn media_presets(model: &str) -> Result<String, JsValue> {
+        super::media_presets_json(model).map_err(|e| JsValue::from_str(&e))
+    }
+    #[wasm_bindgen(js_name=matchMedia)]
+    pub fn match_media(model: &str, width_mm: f64, height_mm: f64) -> Result<String, JsValue> {
+        super::match_media_json(model, width_mm, height_mm).map_err(|e| JsValue::from_str(&e))
     }
     #[wasm_bindgen(js_name=statusPlan)]
     pub fn status_plan(model: &str) -> Result<String, JsValue> {
