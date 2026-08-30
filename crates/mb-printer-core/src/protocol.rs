@@ -73,6 +73,12 @@ pub struct Options {
     pub cut_every: u8,
     pub compress: bool,
     pub high_quality: bool,
+    /// The transport streams a whole job, as an RFCOMM socket or a bulk endpoint
+    /// does, so the per-chunk pacing the Bluetooth drivers need is dead time.
+    pub streaming: bool,
+    /// Send the raster LZO-compressed. Phomemo firmware accepts it on the M110
+    /// family; the vendor application builds it but never reaches the code.
+    pub lzo: bool,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -101,6 +107,8 @@ impl Default for Options {
             cut_every: 1,
             compress: true,
             high_quality: true,
+            streaming: false,
+            lzo: false,
         }
     }
 }
@@ -207,7 +215,7 @@ pub fn plan(printer: &PrinterDefinition, r: &Raster, o: &Options) -> Result<Plan
             cmd(&mut a, "GS | density", vec![0x1d, 0x7c, o.density]);
             delay(&mut a, 50);
             cmd(&mut a, "GS v 0 raster header", header(r));
-            raster(&mut a, printer, r.data.clone());
+            raster_paced(&mut a, printer, r.data.clone(), o.streaming);
             delay(&mut a, 300);
             cmd(&mut a, "ESC J feed", vec![0x1b, 0x4a, o.feed]);
             delay(&mut a, 800)
@@ -220,7 +228,7 @@ pub fn plan(printer: &PrinterDefinition, r: &Raster, o: &Options) -> Result<Plan
             cmd(&mut a, "ESC 7 heat", heat(o.density));
             delay(&mut a, 30);
             cmd(&mut a, "GS v 0 raster header", header(r));
-            raster(&mut a, printer, r.data.clone());
+            raster_paced(&mut a, printer, r.data.clone(), o.streaming);
             delay(&mut a, 300);
             cmd(&mut a, "ESC J feed", vec![0x1b, 0x4a, o.feed.min(8)]);
             delay(&mut a, 500)
@@ -248,7 +256,7 @@ pub fn plan(printer: &PrinterDefinition, r: &Raster, o: &Options) -> Result<Plan
             cmd(&mut a, "M04 compression", vec![0x1f, 0x11, 0x35, 0]);
             delay(&mut a, 30);
             cmd(&mut a, "GS v 0 raster header", header(r));
-            raster(&mut a, printer, r.data.clone());
+            raster_paced(&mut a, printer, r.data.clone(), o.streaming);
             delay(&mut a, 300);
             for _ in 0..round_div(o.feed.max(1) as u16, 16).max(1) {
                 cmd(&mut a, "M04 feed", vec![0x1b, 0x64, 2]);
@@ -278,8 +286,15 @@ pub fn plan(printer: &PrinterDefinition, r: &Raster, o: &Options) -> Result<Plan
                 vec![0x1f, 0x11, if o.continuous { 0x0b } else { 0x0a }],
             );
             delay(&mut a, 30);
-            cmd(&mut a, "GS v 0 raster header", header(r));
-            raster(&mut a, printer, r.data.clone());
+            if o.lzo {
+                cmd(&mut a, "compression on", vec![0x1f, 0x11, 0x35, 1]);
+                cmd(&mut a, "GS v 0 raster", vec![0x1d, 0x76, 0x30, 0]);
+                raster_paced(&mut a, printer, lzo_raster(r)?, o.streaming);
+                cmd(&mut a, "compression off", vec![0x1f, 0x11, 0x35, 0]);
+            } else {
+                cmd(&mut a, "GS v 0 raster header", header(r));
+                raster_paced(&mut a, printer, r.data.clone(), o.streaming);
+            }
             delay(&mut a, 300);
             cmd(
                 &mut a,
@@ -314,7 +329,7 @@ pub fn plan(printer: &PrinterDefinition, r: &Raster, o: &Options) -> Result<Plan
             let mut h = vec![0x1b, 0x40];
             h.extend(header(raster_data));
             cmd(&mut a, "ESC @ init + GS v 0 raster header", h);
-            raster(&mut a, printer, raster_data.data.clone());
+            raster_paced(&mut a, printer, raster_data.data.clone(), o.streaming);
             delay(&mut a, 100);
             cmd(&mut a, "ESC d 0 print + gap detect", vec![0x1b, 0x64, 0])
         }
@@ -340,7 +355,7 @@ pub fn plan(printer: &PrinterDefinition, r: &Raster, o: &Options) -> Result<Plan
             let mut h = vec![0x1b, 0x40];
             h.extend(header(r));
             cmd(&mut a, "ESC @ init + GS v 0 raster header", h);
-            raster(&mut a, printer, r.data.clone());
+            raster_paced(&mut a, printer, r.data.clone(), o.streaming);
             delay(&mut a, 100);
             cmd(&mut a, "P12 feed", vec![0x1b, 0x64, 0x0d]);
             delay(&mut a, 50);
@@ -374,7 +389,12 @@ pub fn plan(printer: &PrinterDefinition, r: &Raster, o: &Options) -> Result<Plan
                 )
                 .into_bytes(),
             );
-            raster(&mut a, printer, r.data.iter().map(|x| x ^ 0xff).collect());
+            raster_paced(
+                &mut a,
+                printer,
+                r.data.iter().map(|x| x ^ 0xff).collect(),
+                o.streaming,
+            );
             cmd(&mut a, "bitmap terminator", b"\r\n".to_vec());
             delay(&mut a, 50);
             cmd(&mut a, "TSPL", tspl(&format!("PRINT {}", o.copies)));
@@ -442,7 +462,12 @@ pub fn plan(printer: &PrinterDefinition, r: &Raster, o: &Options) -> Result<Plan
             if compress {
                 cmd(&mut a, "M compression", vec![0x4d, 2]);
             }
-            raster(&mut a, printer, brother_raster_lines(r, compress));
+            raster_paced(
+                &mut a,
+                printer,
+                brother_raster_lines(r, compress),
+                o.streaming,
+            );
             cmd(&mut a, "print", vec![0x1a])
         }
     }
@@ -713,11 +738,11 @@ fn cmd(a: &mut Vec<Action>, name: &str, bytes: Vec<u8>) {
 fn delay(a: &mut Vec<Action>, milliseconds: u64) {
     a.push(Action::Delay { milliseconds })
 }
-fn raster(a: &mut Vec<Action>, p: &PrinterDefinition, bytes: Vec<u8>) {
+fn raster_paced(a: &mut Vec<Action>, p: &PrinterDefinition, bytes: Vec<u8>, streaming: bool) {
     a.push(Action::RasterWrite {
         bytes,
         logical_chunk: p.chunk_size(),
-        delay_after_each_physical_write_ms: p.chunk_delay_ms(),
+        delay_after_each_physical_write_ms: if streaming { 0 } else { p.chunk_delay_ms() },
     })
 }
 fn heat(d: u8) -> Vec<u8> {
@@ -728,6 +753,25 @@ fn heat(d: u8) -> Vec<u8> {
         [40, 60, 80, 100, 120, 140, 160, 200][d as usize - 1],
         2,
     ]
+}
+/// Phomemo's compressed raster: the width and height header, then 4096-byte
+/// blocks of LZO, each behind its own three-byte little-endian length.
+pub fn lzo_raster(r: &Raster) -> Result<Vec<u8>, PlanError> {
+    let width = r.width_bytes.to_le_bytes();
+    let height = (r.height as u16).to_le_bytes();
+    let mut out = vec![width[0], width[1], height[0], height[1]];
+    for block in r.data.chunks(4096) {
+        let compressed =
+            lzokay_native::compress(block).map_err(|_| PlanError::Range("lzo compression"))?;
+        let length = compressed.len();
+        out.extend([
+            (length % 256) as u8,
+            ((length / 256) % 256) as u8,
+            ((length / 65536) % 256) as u8,
+        ]);
+        out.extend(compressed);
+    }
+    Ok(out)
 }
 fn header(r: &Raster) -> Vec<u8> {
     let w = r.width_bytes.to_le_bytes();
