@@ -95,3 +95,39 @@ fn captured_brother_status_decodes() {
     trailing.push(0);
     assert!(protocol::brother_parse_status(&trailing).is_err());
 }
+
+#[test]
+fn status_plan_is_document_free_and_brother_only() {
+    let brother = mb_printer_core::capabilities::by_id("ql-1110nwb").unwrap();
+    let plan = protocol::status_plan(&brother).unwrap();
+    let commands: Vec<&[u8]> = plan
+        .actions
+        .iter()
+        .filter_map(|a| {
+            if let Action::CommandWrite { bytes, .. } = a {
+                Some(bytes.as_slice())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(commands.last().unwrap(), &[0x1b, 0x69, 0x53]);
+    assert!(matches!(
+        plan.actions.last().unwrap(),
+        Action::WaitForResponse {
+            validation: protocol::ResponseValidation::BrotherStatus32,
+            ..
+        }
+    ));
+    assert!(
+        !plan
+            .actions
+            .iter()
+            .any(|a| matches!(a, Action::RasterWrite { .. }))
+    );
+    let phomemo = mb_printer_core::capabilities::by_id("m110").unwrap();
+    assert!(matches!(
+        protocol::status_plan(&phomemo),
+        Err(protocol::PlanError::Unsupported(_))
+    ));
+}

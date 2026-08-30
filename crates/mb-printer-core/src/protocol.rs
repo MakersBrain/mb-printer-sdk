@@ -110,6 +110,39 @@ pub enum PlanError {
     RasterLength,
     #[error("value is outside protocol range: {0}")]
     Range(&'static str),
+    #[error("protocol does not support this operation: {0}")]
+    Unsupported(&'static str),
+}
+
+/// Builds a document-free plan that only asks the printer for its status.
+/// The executor captures the reply, which `brother_parse_status` decodes.
+pub fn status_plan(printer: &PrinterDefinition) -> Result<Plan, PlanError> {
+    let mut a = Vec::new();
+    match printer.protocol {
+        Protocol::Brother => {
+            cmd(
+                &mut a,
+                "invalidate",
+                vec![0; printer.invalidate_bytes as usize],
+            );
+            cmd(&mut a, "ESC @ init", vec![0x1b, 0x40]);
+            // The printer discards a status request that arrives while it is
+            // still consuming the invalidate/init preamble.
+            delay(&mut a, 100);
+            cmd(&mut a, "ESC i S status request", vec![0x1b, 0x69, 0x53]);
+            a.push(Action::WaitForResponse {
+                timeout_ms: 3000,
+                fallback_delay_ms: 0,
+                validation: ResponseValidation::BrotherStatus32,
+            });
+        }
+        _ => return Err(PlanError::Unsupported("status request")),
+    }
+    Ok(Plan {
+        protocol: printer.protocol,
+        source_commit: SOURCE_COMMIT.into(),
+        actions: a,
+    })
 }
 
 pub fn plan(printer: &PrinterDefinition, r: &Raster, o: &Options) -> Result<Plan, PlanError> {
@@ -486,7 +519,8 @@ fn brother_raster_lines(r: &Raster, compress: bool) -> Vec<u8> {
     }
     out
 }
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BrotherStatus {
     pub media_width_mm: u8,
     pub media_length_mm: u8,
