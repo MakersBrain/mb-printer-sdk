@@ -1,0 +1,12 @@
+{
+  "_comment": "Per-model print geometry stated by the vendor application, whose image transform selects these values by model name. Media width is what the printer accepts; printable width is what the head covers.",
+  "models": {
+    "m110": { "dpi": 203, "maxMediaWidthMm": 50, "printableWidthMm": 48.0, "printableWidthDots": 384 },
+    "m110s": { "dpi": 203, "maxMediaWidthMm": 50, "printableWidthMm": 48.0, "printableWidthDots": 384 },
+    "m200": { "dpi": 203, "maxMediaWidthMm": 80, "printableWidthMm": 72.0, "printableWidthDots": 576 },
+    "m220": { "dpi": 203, "maxMediaWidthMm": 80, "printableWidthMm": 72.0, "printableWidthDots": 576 },
+    "m221": { "dpi": 203, "maxMediaWidthMm": 80, "printableWidthMm": 72.0, "printableWidthDots": 576 },
+    "m250": { "dpi": 203, "maxMediaWidthMm": 80, "printableWidthMm": 72.0, "printableWidthDots": 576 },
+    "m260": { "dpi": 203, "maxMediaWidthMm": 80, "printableWidthMm": 72.0, "printableWidthDots": 576 }
+  }
+}
