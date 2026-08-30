@@ -29,21 +29,6 @@ fn document_render_options(document: &Document) -> render::RenderOptions {
     }
 }
 
-#[cfg(test)]
-mod render_option_tests {
-    use super::*;
-
-    #[test]
-    fn reads_non_destructive_dither_profile_from_document_extension() {
-        let input = r#"{"version":4,"name":"dither","media":{"width":1000,"height":1000,"unit":"micrometre","dpi":203,"orientation":"portrait","printableBounds":{"x":0,"y":0,"width":1000,"height":1000},"shape":"rectangle"},"coordinateSystem":{"unit":"micrometre","origin":"top-left","rounding":"half-away-from-zero"},"elements":[],"resources":[],"fields":[],"extensions":{"makersbrain.render:dither":{"algorithm":"atkinson","threshold":140}}}"#;
-        let document = Document::from_json(input).unwrap();
-        assert_eq!(
-            document_render_options(&document).dither,
-            mb_printer_core::raster::Dither::Atkinson
-        );
-    }
-}
-
 pub fn validate_document_json(input: &str) -> String {
     match Document::from_json(input) {
         Ok(d) => match d.validate() {
@@ -54,6 +39,7 @@ pub fn validate_document_json(input: &str) -> String {
         Err(e) => serde_json::to_string(&vec![e.to_string()]).unwrap(),
     }
 }
+
 pub fn capabilities_json() -> String {
     serde_json::to_string(&capabilities::bundled()).expect("definitions serialize")
 }
@@ -421,5 +407,20 @@ mod bindings {
     ) -> Result<String, JsValue> {
         super::render_protocol_plan_with_options(input, model, options_json)
             .map_err(|e| JsValue::from_str(&e))
+    }
+}
+
+#[cfg(test)]
+mod render_option_tests {
+    use super::*;
+
+    #[test]
+    fn reads_non_destructive_dither_profile_from_document_extension() {
+        let input = r#"{"version":4,"name":"dither","media":{"width":1000,"height":1000,"unit":"micrometre","dpi":203,"orientation":"portrait","printableBounds":{"x":0,"y":0,"width":1000,"height":1000},"shape":"rectangle"},"coordinateSystem":{"unit":"micrometre","origin":"top-left","rounding":"half-away-from-zero"},"elements":[],"resources":[],"fields":[],"extensions":{"makersbrain.render:dither":{"algorithm":"atkinson","threshold":140}}}"#;
+        let document = Document::from_json(input).unwrap();
+        assert_eq!(
+            document_render_options(&document).dither,
+            mb_printer_core::raster::Dither::Atkinson
+        );
     }
 }

@@ -208,10 +208,10 @@ fn collect_response<T: Transport>(
             WaitOutcome::Response(chunk) => {
                 bytes.extend(chunk);
                 if matches!(validation, ResponseValidation::PhomemoNotification) {
-                    if let Some(start) = bytes.iter().position(|byte| *byte == 0x1a) {
-                        if bytes.len() - start >= expected {
-                            return Ok(WaitOutcome::Response(bytes.split_off(start)));
-                        }
+                    if let Some(start) = bytes.iter().position(|byte| *byte == 0x1a)
+                        && bytes.len() - start >= expected
+                    {
+                        return Ok(WaitOutcome::Response(bytes.split_off(start)));
                     }
                     continue;
                 }
