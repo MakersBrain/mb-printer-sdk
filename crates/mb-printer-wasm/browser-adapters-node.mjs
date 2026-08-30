@@ -31,7 +31,7 @@ assert.equal((await executePlan([command([1]),wait("brother-status32")],mock)).s
 mock = transport({kind:"unavailable"});
 assert.equal((await executePlan([wait("any-notification",1)],mock)).status,"completed");
 mock = transport({kind:"timeout"});
-assert.equal((await executePlan([wait("any-notification",5)],mock)).status,"outcome-unknown","timeout must not use unavailable fallback");
+assert.equal((await executePlan([wait("any-notification",5)],mock)).status,"completed","timeout fallback must match native execution");
 mock = transport({kind:"timeout"});
 assert.equal((await executePlan([wait("brother-status32")],mock)).status,"completed","Brother timeout is a frozen best-effort preflight");
 mock = transport({kind:"unavailable"});

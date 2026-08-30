@@ -9,19 +9,19 @@ fn document_render_options(document: &Document) -> render::RenderOptions {
     let setting = document.extensions.get("makersbrain.render:dither");
     let algorithm = setting
         .and_then(|value| value.get("algorithm"))
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("auto");
+        .and_then(serde_json::Value::as_str);
     let threshold = setting
         .and_then(|value| value.get("threshold"))
         .and_then(serde_json::Value::as_u64)
         .and_then(|value| u8::try_from(value).ok())
         .unwrap_or(128);
     let dither = match algorithm {
-        "threshold" => mb_printer_core::raster::Dither::Threshold(threshold),
-        "bayer" => mb_printer_core::raster::Dither::Bayer4,
-        "floyd-steinberg" => mb_printer_core::raster::Dither::FloydSteinberg,
-        "atkinson" => mb_printer_core::raster::Dither::Atkinson,
-        _ => mb_printer_core::raster::Dither::Auto,
+        Some("auto") => mb_printer_core::raster::Dither::Auto,
+        Some("threshold") => mb_printer_core::raster::Dither::Threshold(threshold),
+        Some("bayer") => mb_printer_core::raster::Dither::Bayer4,
+        Some("floyd-steinberg") => mb_printer_core::raster::Dither::FloydSteinberg,
+        Some("atkinson") => mb_printer_core::raster::Dither::Atkinson,
+        Some(_) | None => render::RenderOptions::default().dither,
     };
     render::RenderOptions {
         dither,
