@@ -597,11 +597,14 @@ pub fn phomemo_parse_status(frames: &[Vec<u8>]) -> PhomemoStatus {
             0x06 => status.paper = Some(if value == 0x88 { "out" } else { "ok" }),
             0x07 => status.firmware = Some(dotted(&frame[2..])),
             0x08 => status.serial = Some(ascii(&frame[2..])),
+            // The vendor application maps this reply onto its paper types, which
+            // it then emits as TSPL: continuous prints GAP 0, black-mark BLINE,
+            // and everything else the ordinary gap sensing.
             0x0c => {
                 status.label = Some(match value {
                     0x0b => "continuous",
-                    0x26 => "gap",
-                    _ => "unknown",
+                    0x26 => "black-mark",
+                    _ => "gap",
                 })
             }
             0x11 => status.version = Some(dotted(&frame[2..])),
