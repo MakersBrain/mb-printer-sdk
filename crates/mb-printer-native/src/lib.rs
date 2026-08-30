@@ -56,6 +56,8 @@ pub struct Progress {
     pub last_completed_action: Option<usize>,
     pub bytes_written: u64,
     pub potentially_accepted_write: bool,
+    /// Every reply the printer returned, in action order. Status plans read the last one.
+    pub responses: Vec<Vec<u8>>,
 }
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ExecuteError {
@@ -154,8 +156,14 @@ pub fn execute_with_timing<T: Transport>(
                 timeout_ms,
                 fallback_delay_ms,
                 validation,
-            } => match t.wait_response(*timeout_ms) {
-                Ok(WaitOutcome::Response(bytes)) => validate(*validation, &bytes, &p),
+            } => match collect_response(t, *timeout_ms, *validation) {
+                Ok(WaitOutcome::Response(bytes)) => {
+                    let outcome = validate(*validation, &bytes, &p);
+                    if outcome.is_ok() {
+                        p.responses.push(bytes)
+                    }
+                    outcome
+                }
                 Ok(WaitOutcome::Unavailable) if *fallback_delay_ms > 0 => {
                     t.delay_monotonic(timing.apply(*fallback_delay_ms));
                     Ok(())
@@ -180,6 +188,38 @@ pub fn execute_with_timing<T: Transport>(
         p.last_completed_action = Some(i)
     }
     Ok(p)
+}
+
+/// Bulk endpoints may split a reply across reads, so keep reading until the
+/// declared validator has enough bytes or the printer stops answering.
+fn collect_response<T: Transport>(
+    t: &mut T,
+    timeout_ms: u64,
+    validation: ResponseValidation,
+) -> Result<WaitOutcome, String> {
+    let expected = match validation {
+        ResponseValidation::BrotherStatus32 => 32,
+        ResponseValidation::AnyNotification => 1,
+    };
+    let mut bytes: Vec<u8> = Vec::new();
+    for _ in 0..16 {
+        match t.wait_response(timeout_ms)? {
+            WaitOutcome::Response(chunk) => {
+                bytes.extend(chunk);
+                if bytes.len() >= expected {
+                    return Ok(WaitOutcome::Response(bytes));
+                }
+            }
+            outcome => {
+                return Ok(if bytes.is_empty() {
+                    outcome
+                } else {
+                    WaitOutcome::Response(bytes)
+                });
+            }
+        }
+    }
+    Ok(WaitOutcome::Response(bytes))
 }
 
 /// Process-local single-attempt guard. Keys must be durable job IDs supplied by the caller.

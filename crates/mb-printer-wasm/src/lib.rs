@@ -165,6 +165,18 @@ pub fn extract_laposte_pdf_json(code: &str, bytes: Vec<u8>, dpi: u16) -> Result<
     let values:Vec<_>=stamps.into_iter().map(|s|serde_json::json!({"page":s.page,"sourcePage":s.page,"slot":s.slot,"widthUm":s.width_um,"heightUm":s.height_um,"rasterWidth":s.raster.width,"rasterHeight":s.raster.height,"pixels":s.raster.pixels})).collect();
     serde_json::to_string(&values).map_err(|e| e.to_string())
 }
+/// Document-free plan that only asks the printer for its status.
+pub fn status_plan_json(model: &str) -> Result<String, String> {
+    let printer = capabilities::by_id(model).ok_or_else(|| format!("unknown model: {model}"))?;
+    let plan = protocol::status_plan(&printer).map_err(|e| e.to_string())?;
+    serde_json::to_string(&serde_json::json!({"protocol":plan.protocol,"actions":plan.actions}))
+        .map_err(|e| e.to_string())
+}
+/// Decodes the 32-byte reply a Brother printer returns to `ESC i S`.
+pub fn parse_brother_status_json(data: &[u8]) -> Result<String, String> {
+    let status = protocol::brother_parse_status(data).map_err(|e| e.to_owned())?;
+    serde_json::to_string(&status).map_err(|e| e.to_string())
+}
 pub fn render_protocol_plan(input: &str, model: &str) -> Result<String, String> {
     render_protocol_plan_with_options(input, model, "{}")
 }
@@ -317,6 +329,14 @@ mod bindings {
     #[wasm_bindgen(js_name=extractLaPostePdf)]
     pub fn extract_laposte_pdf(code: &str, bytes: Vec<u8>, dpi: u16) -> Result<String, JsValue> {
         super::extract_laposte_pdf_json(code, bytes, dpi).map_err(|e| JsValue::from_str(&e))
+    }
+    #[wasm_bindgen(js_name=statusPlan)]
+    pub fn status_plan(model: &str) -> Result<String, JsValue> {
+        super::status_plan_json(model).map_err(|e| JsValue::from_str(&e))
+    }
+    #[wasm_bindgen(js_name=parseBrotherStatus)]
+    pub fn parse_brother_status(data: &[u8]) -> Result<String, JsValue> {
+        super::parse_brother_status_json(data).map_err(|e| JsValue::from_str(&e))
     }
     #[wasm_bindgen(js_name=renderProtocolPlan)]
     pub fn render_protocol_plan(input: &str, model: &str) -> Result<String, JsValue> {

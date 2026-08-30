@@ -7,6 +7,10 @@ struct Mock {
     delays: Vec<u64>,
     fail_write: bool,
     response: Option<Vec<u8>>,
+    /// Frames delivered in order before the transport goes quiet.
+    frames: Vec<Vec<u8>>,
+    /// Stop answering once the queued response/frames are consumed.
+    exhaust: bool,
     wait: Option<WaitOutcome>,
     command_limit: Option<usize>,
     raster_limit: Option<usize>,
@@ -35,9 +39,14 @@ impl Transport for Mock {
         if let Some(outcome) = self.wait.take() {
             return Ok(outcome);
         }
-        Ok(WaitOutcome::Response(
-            self.response.take().unwrap_or_else(|| vec![1]),
-        ))
+        if !self.frames.is_empty() {
+            return Ok(WaitOutcome::Response(self.frames.remove(0)));
+        }
+        match self.response.take() {
+            Some(bytes) => Ok(WaitOutcome::Response(bytes)),
+            None if self.exhaust => Ok(WaitOutcome::Timeout),
+            None => Ok(WaitOutcome::Response(vec![1])),
+        }
     }
 }
 #[test]
@@ -78,6 +87,7 @@ fn brother_status_policy_requires_exactly_32_bytes() {
         bytes[..3].copy_from_slice(&[0x80, 0x20, 0x42]);
         let mut transport = Mock {
             response: Some(bytes),
+            exhaust: true,
             ..Default::default()
         };
         assert!(matches!(
@@ -217,4 +227,48 @@ fn timing_policy_preserves_or_only_explicitly_changes_reference_delays() {
     )
     .unwrap();
     assert_eq!(diagnostic.delays, [13, 3, 3]);
+}
+
+#[test]
+fn validated_responses_are_captured_for_status_queries() {
+    let plan = Plan {
+        protocol: mb_printer_core::capabilities::Protocol::Brother,
+        source_commit: String::new(),
+        actions: vec![Action::WaitForResponse {
+            timeout_ms: 1,
+            fallback_delay_ms: 0,
+            validation: ResponseValidation::BrotherStatus32,
+        }],
+    };
+    let mut status = vec![0; 32];
+    status[..3].copy_from_slice(&[0x80, 0x20, 0x42]);
+    status[10] = 62;
+    let mut transport = Mock {
+        response: Some(status.clone()),
+        ..Default::default()
+    };
+    let progress = execute(&plan, &mut transport).unwrap();
+    assert_eq!(progress.responses, vec![status]);
+}
+
+#[test]
+fn a_split_brother_status_frame_is_reassembled() {
+    let plan = Plan {
+        protocol: mb_printer_core::capabilities::Protocol::Brother,
+        source_commit: String::new(),
+        actions: vec![Action::WaitForResponse {
+            timeout_ms: 1,
+            fallback_delay_ms: 0,
+            validation: ResponseValidation::BrotherStatus32,
+        }],
+    };
+    let mut head = vec![0; 16];
+    head[..3].copy_from_slice(&[0x80, 0x20, 0x42]);
+    let mut transport = Mock {
+        frames: vec![head, vec![0; 16]],
+        exhaust: true,
+        ..Default::default()
+    };
+    let progress = execute(&plan, &mut transport).unwrap();
+    assert_eq!(progress.responses.last().map(Vec::len), Some(32));
 }
