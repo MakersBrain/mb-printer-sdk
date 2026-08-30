@@ -97,7 +97,7 @@ fn captured_brother_status_decodes() {
 }
 
 #[test]
-fn status_plan_is_document_free_and_brother_only() {
+fn brother_status_plan_is_document_free() {
     let brother = mb_printer_core::capabilities::by_id("ql-1110nwb").unwrap();
     let plan = protocol::status_plan(&brother).unwrap();
     let commands: Vec<&[u8]> = plan
@@ -125,9 +125,51 @@ fn status_plan_is_document_free_and_brother_only() {
             .iter()
             .any(|a| matches!(a, Action::RasterWrite { .. }))
     );
-    let phomemo = mb_printer_core::capabilities::by_id("m110").unwrap();
+    let tspl = mb_printer_core::capabilities::by_id("pm241").unwrap();
     assert!(matches!(
-        protocol::status_plan(&phomemo),
+        protocol::status_plan(&tspl),
         Err(protocol::PlanError::Unsupported(_))
     ));
+}
+
+#[test]
+fn phomemo_status_plan_queries_and_decodes_notification_frames() {
+    let phomemo = mb_printer_core::capabilities::by_id("m110").unwrap();
+    let plan = protocol::status_plan(&phomemo).unwrap();
+    assert!(matches!(
+        plan.actions.first(),
+        Some(Action::SubscribeNotifications)
+    ));
+    let queries: Vec<&[u8]> = plan
+        .actions
+        .iter()
+        .filter_map(|a| {
+            if let Action::CommandWrite { bytes, .. } = a {
+                Some(bytes.as_slice())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(queries[0], [0x1f, 0x11, 0x08]);
+    assert_eq!(queries.len(), protocol::PHOMEMO_QUERIES.len());
+
+    let status = protocol::phomemo_parse_status(&[
+        vec![0x1a, 0x04, 0xa2],
+        vec![0x1a, 0x05, 0x98],
+        vec![0x1a, 0x06, 0x88],
+        vec![0x1a, 0x07, 1, 2, 3],
+        vec![0x1a, 0x08, b'M', b'B', b'1'],
+        vec![0x1a, 0x0c, 0x26],
+        vec![0x1a, 0x7f, 0x00],
+        vec![0x00, 0x01],
+    ]);
+    assert_eq!(status.battery, Some(5));
+    assert_eq!(status.cover, Some("open"));
+    assert_eq!(status.paper, Some("out"));
+    assert_eq!(status.label, Some("gap"));
+    assert_eq!(status.firmware.as_deref(), Some("1.2.3"));
+    assert_eq!(status.serial.as_deref(), Some("MB1"));
+    assert_eq!(status.errors, vec!["no media", "cover open"]);
+    assert_eq!(protocol::phomemo_parse_status(&[]), Default::default());
 }

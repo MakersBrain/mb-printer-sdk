@@ -172,6 +172,12 @@ pub fn status_plan_json(model: &str) -> Result<String, String> {
     serde_json::to_string(&serde_json::json!({"protocol":plan.protocol,"actions":plan.actions}))
         .map_err(|e| e.to_string())
 }
+/// Decodes the `1a <type> <payload>` notification frames a Phomemo printer
+/// returns to the `1f 11` queries. Input is a JSON array of byte arrays.
+pub fn parse_phomemo_status_json(frames_json: &str) -> Result<String, String> {
+    let frames: Vec<Vec<u8>> = serde_json::from_str(frames_json).map_err(|e| e.to_string())?;
+    serde_json::to_string(&protocol::phomemo_parse_status(&frames)).map_err(|e| e.to_string())
+}
 /// Decodes the 32-byte reply a Brother printer returns to `ESC i S`.
 pub fn parse_brother_status_json(data: &[u8]) -> Result<String, String> {
     let status = protocol::brother_parse_status(data).map_err(|e| e.to_owned())?;
@@ -333,6 +339,10 @@ mod bindings {
     #[wasm_bindgen(js_name=statusPlan)]
     pub fn status_plan(model: &str) -> Result<String, JsValue> {
         super::status_plan_json(model).map_err(|e| JsValue::from_str(&e))
+    }
+    #[wasm_bindgen(js_name=parsePhomemoStatus)]
+    pub fn parse_phomemo_status(frames_json: &str) -> Result<String, JsValue> {
+        super::parse_phomemo_status_json(frames_json).map_err(|e| JsValue::from_str(&e))
     }
     #[wasm_bindgen(js_name=parseBrotherStatus)]
     pub fn parse_brother_status(data: &[u8]) -> Result<String, JsValue> {

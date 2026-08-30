@@ -136,6 +136,24 @@ pub fn status_plan(printer: &PrinterDefinition) -> Result<Plan, PlanError> {
                 validation: ResponseValidation::BrotherStatus32,
             });
         }
+        // Phomemo families answer 1f 11 <code> on the notification channel.
+        Protocol::MSeries
+        | Protocol::M02
+        | Protocol::M04
+        | Protocol::M110
+        | Protocol::DSeries
+        | Protocol::P12 => {
+            a.push(Action::SubscribeNotifications);
+            for (name, code) in PHOMEMO_QUERIES {
+                cmd(&mut a, name, vec![0x1f, 0x11, *code]);
+                a.push(Action::WaitForResponse {
+                    timeout_ms: 800,
+                    // A model that does not answer one query must not fail the rest.
+                    fallback_delay_ms: 100,
+                    validation: ResponseValidation::AnyNotification,
+                });
+            }
+        }
         _ => return Err(PlanError::Unsupported("status request")),
     }
     Ok(Plan {
@@ -518,6 +536,102 @@ fn brother_raster_lines(r: &Raster, compress: bool) -> Vec<u8> {
         out.extend(bytes)
     }
     out
+}
+/// Phomemo status queries, `1f 11 <code>`. Replies arrive as notifications
+/// whose type byte does not repeat the query code.
+pub const PHOMEMO_QUERIES: &[(&str, u8)] = &[
+    ("battery query", 0x08),
+    ("paper query", 0x11),
+    ("cover query", 0x12),
+    ("firmware query", 0x07),
+    ("serial query", 0x09),
+    ("label query", 0x19),
+];
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PhomemoStatus {
+    /// Remaining charge in the printer's own coarse steps: 0, 3, 5, 10, or a raw level.
+    pub battery: Option<u8>,
+    pub paper: Option<&'static str>,
+    pub cover: Option<&'static str>,
+    pub label: Option<&'static str>,
+    pub heating: Option<&'static str>,
+    pub firmware: Option<String>,
+    pub version: Option<String>,
+    pub serial: Option<String>,
+    pub errors: Vec<&'static str>,
+}
+/// Decodes `1a <type> <payload>` notification frames. Unknown frames are ignored
+/// so one unrecognised reply cannot hide the rest.
+pub fn phomemo_parse_status(frames: &[Vec<u8>]) -> PhomemoStatus {
+    let mut status = PhomemoStatus::default();
+    for frame in frames {
+        if frame.len() < 3 || frame[0] != 0x1a {
+            continue;
+        }
+        let value = frame[2];
+        match frame[1] {
+            0x03 => {
+                status.heating = Some(match value {
+                    0xa9 => "over temperature",
+                    0xa8 => "ready",
+                    _ => "heating",
+                })
+            }
+            0x04 => {
+                status.battery = Some(match value {
+                    0xa4 => 0,
+                    0xa3 => 3,
+                    0xa2 => 5,
+                    0xa1 => 10,
+                    other => other,
+                })
+            }
+            0x05 => {
+                status.cover = Some(match value {
+                    0x98 => "open",
+                    0x99 => "closed",
+                    _ => "unknown",
+                })
+            }
+            0x06 => status.paper = Some(if value == 0x88 { "out" } else { "ok" }),
+            0x07 => status.firmware = Some(dotted(&frame[2..])),
+            0x08 => status.serial = Some(ascii(&frame[2..])),
+            0x0c => {
+                status.label = Some(match value {
+                    0x0b => "continuous",
+                    0x26 => "gap",
+                    _ => "unknown",
+                })
+            }
+            0x11 => status.version = Some(dotted(&frame[2..])),
+            _ => {}
+        }
+    }
+    if status.paper == Some("out") {
+        status.errors.push("no media")
+    }
+    if status.cover == Some("open") {
+        status.errors.push("cover open")
+    }
+    if status.heating == Some("over temperature") {
+        status.errors.push("print head over temperature")
+    }
+    status
+}
+fn dotted(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(|byte| byte.to_string())
+        .collect::<Vec<_>>()
+        .join(".")
+}
+fn ascii(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .filter(|byte| byte.is_ascii_graphic())
+        .map(|byte| *byte as char)
+        .collect()
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
