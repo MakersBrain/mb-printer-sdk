@@ -234,6 +234,23 @@ fn code128_is_supported() {
     assert!(render::render(&d, Default::default()).is_ok())
 }
 #[test]
+fn image_inversion_is_non_destructive_and_element_scoped() {
+    let base = r#"{"version":4,"name":"invert","media":{"width":10000,"height":10000,"unit":"micrometre","dpi":254,"orientation":"portrait","printableBounds":{"x":0,"y":0,"width":10000,"height":10000},"shape":"rectangle"},"coordinateSystem":{"unit":"micrometre","origin":"top-left","rounding":"half-away-from-zero"},"elements":[{"type":"image","id":"picture","transform":{"x":1000,"y":1000,"width":8000,"height":8000},"zOrder":0,"resource":"png"}],"resources":[{"id":"png","mediaType":"image/png","sha256":"431ced6916a2a21a156e38701afe55bbd7f88969fbbfc56d7fe099d47f265460","dataBase64":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="}],"fields":[],"extensions":{}}"#;
+    let normal = Document::from_json(base).unwrap();
+    let inverted = Document::from_json(&base.replace(
+        r#""extensions":{}"#,
+        r#""extensions":{"makersbrain.render:images":{"picture":{"invert":true}}}"#,
+    ))
+    .unwrap();
+    let normal_raster = render::render(&normal, Default::default()).unwrap();
+    let inverted_raster = render::render(&inverted, Default::default()).unwrap();
+    assert_ne!(normal_raster, inverted_raster);
+    assert_eq!(
+        normal.resources[0].data_base64,
+        inverted.resources[0].data_base64
+    );
+}
+#[test]
 fn retail_barcode_check_digits_are_enforced() {
     for (kind, data) in [("ean13", "4006381333931"), ("upc-a", "036000291452")] {
         let source = DOC

@@ -99,6 +99,14 @@ fn effectively_visible(element: &Element, doc: &Document) -> bool {
     }
     group.is_none()
 }
+fn image_is_inverted(doc: &Document, element_id: &str) -> bool {
+    doc.extensions
+        .get("makersbrain.render:images")
+        .and_then(|value| value.get(element_id))
+        .and_then(|value| value.get("invert"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
 fn effective_zone<'a>(element: &'a Element, doc: &'a Document) -> Option<&'a str> {
     let mut current = Some(element);
     for _ in 0..=doc.elements.len() {
@@ -458,11 +466,16 @@ fn draw_at(
                 .ok_or_else(|| RenderError::Resource(resource.clone()))?;
             let image = crate::resources::normalize(item, 100_000_000)
                 .map_err(|e| RenderError::Resource(e.to_string()))?;
-            let cropped = if let Some(bounds) = crop {
+            let mut cropped = if let Some(bounds) = crop {
                 crop_source(&image, *bounds)
             } else {
                 image
             };
+            if image_is_inverted(doc, &common(e).id) {
+                for pixel in &mut cropped.pixels {
+                    *pixel = 255 - *pixel;
+                }
+            }
             paste_fit(
                 c,
                 &cropped,
