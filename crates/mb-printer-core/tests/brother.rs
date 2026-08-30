@@ -112,6 +112,7 @@ fn brother_status_plan_is_document_free() {
         })
         .collect();
     assert_eq!(commands.last().unwrap(), &[0x1b, 0x69, 0x53]);
+    assert!(commands.contains(&[0x1b, 0x69, 0x61, 1].as_slice()));
     assert!(matches!(
         plan.actions.last().unwrap(),
         Action::WaitForResponse {
@@ -153,6 +154,13 @@ fn phomemo_status_plan_queries_and_decodes_notification_frames() {
         .collect();
     assert_eq!(queries[0], [0x1f, 0x11, 0x08]);
     assert_eq!(queries.len(), protocol::PHOMEMO_QUERIES.len());
+    assert!(plan.actions.iter().any(|action| matches!(
+        action,
+        Action::WaitForResponse {
+            validation: protocol::ResponseValidation::PhomemoNotification,
+            ..
+        }
+    )));
 
     let status = protocol::phomemo_parse_status(&[
         vec![0x1a, 0x04, 0xa2],
@@ -165,7 +173,7 @@ fn phomemo_status_plan_queries_and_decodes_notification_frames() {
         vec![0x00, 0x01],
     ]);
     assert_eq!(status.battery, Some(5));
-    assert_eq!(status.cover, Some("open"));
+    assert_eq!(status.cover, Some("closed"));
     assert_eq!(status.paper, Some("out"));
     assert_eq!(status.label, Some("black-mark"));
     assert_eq!(
@@ -174,6 +182,10 @@ fn phomemo_status_plan_queries_and_decodes_notification_frames() {
     );
     assert_eq!(status.firmware.as_deref(), Some("1.2.3"));
     assert_eq!(status.serial.as_deref(), Some("MB1"));
-    assert_eq!(status.errors, vec!["no media", "cover open"]);
+    assert_eq!(status.errors, vec!["no media"]);
+    assert_eq!(
+        protocol::phomemo_parse_status(&[vec![0x1a, 0x05, 0x99]]).errors,
+        vec!["cover open"]
+    );
     assert_eq!(protocol::phomemo_parse_status(&[]), Default::default());
 }

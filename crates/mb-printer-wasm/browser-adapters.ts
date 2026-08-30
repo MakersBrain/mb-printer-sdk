@@ -143,12 +143,18 @@ const preflight = (actions: PlanAction[], limit: number, commandLimit: number) =
     if ("bytes" in action && action.bytes.some(byte => !Number.isInteger(byte) || byte < 0 || byte > 255)) throw new Error(`invalid byte in action ${index}`);
     if (action.action === "command-write" && action.atomic && action.bytes.length > commandLimit) throw new Error(`atomic command ${index} exceeds command limit before job start`);
     if (action.action === "raster-write" && (!Number.isInteger(action.logical_chunk) || action.logical_chunk <= 0)) throw new Error(`invalid raster chunk in action ${index}`);
-    if (action.action === "wait-for-response" && !["any-notification", "brother-status32"].includes(action.validation)) throw new Error(`unsupported response validation in action ${index}`);
+    if (action.action === "wait-for-response" && !["any-notification", "phomemo-notification", "brother-status32"].includes(action.validation)) throw new Error(`unsupported response validation in action ${index}`);
   }
 };
 const validResponse = (validation: string, bytes: Uint8Array) => validation === "any-notification"
   ? bytes.length > 0
-  : bytes.length === 32 && bytes[0] === 0x80 && bytes[1] === 0x20 && bytes[2] === 0x42;
+  : validation === "phomemo-notification"
+    ? bytes.length >= 3 && bytes[0] === 0x1a
+    : bytes.length === 32 && bytes[0] === 0x80 && bytes[1] === 0x20 && bytes[2] === 0x42;
+const phomemoFrame = (bytes: number[]): Uint8Array | undefined => {
+  const start = bytes.indexOf(0x1a);
+  return start >= 0 && bytes.length - start >= 3 ? Uint8Array.from(bytes.slice(start)) : undefined;
+};
 
 /** Executes exactly once. Runtime ambiguity is returned and never retried automatically. */
 export async function executePlan(actions: PlanAction[], transport: BrowserTransport,
@@ -184,8 +190,19 @@ export async function executePlan(actions: PlanAction[], transport: BrowserTrans
           }
         }
       } else if (action.action === "wait-for-response") {
-        const reply = await transport.waitForResponse(action.timeout_ms, signal);
-        if (reply.kind === "unavailable" && action.fallback_delay_ms > 0) await delay(paced(action.fallback_delay_ms), signal);
+        let reply: ResponseWait;
+        if (action.validation === "phomemo-notification") {
+          const deadline = Date.now() + action.timeout_ms, collected: number[] = [];
+          reply = { kind: "timeout" };
+          while (Date.now() < deadline) {
+            const next = await transport.waitForResponse(Math.max(1, deadline - Date.now()), signal);
+            if (next.kind !== "response") { reply = next; break; }
+            collected.push(...next.bytes);
+            const frame = phomemoFrame(collected);
+            if (frame) { reply = { kind: "response", bytes: frame }; break; }
+          }
+        } else reply = await transport.waitForResponse(action.timeout_ms, signal);
+        if ((reply.kind === "unavailable" || reply.kind === "timeout") && action.fallback_delay_ms > 0) await delay(paced(action.fallback_delay_ms), signal);
         else if ((reply.kind === "unavailable" || reply.kind === "timeout") && action.validation === "brother-status32") { /* best-effort frozen Brother preflight */ }
         else if (reply.kind === "unavailable") return done("outcome-unknown", `notifications unavailable after action ${index}`);
         else if (reply.kind === "timeout") return done("outcome-unknown", `response timeout after action ${index}`);

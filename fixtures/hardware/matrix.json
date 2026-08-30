@@ -8,6 +8,7 @@
     {"id":"native-m-series-ble","family":"m-series","transport":"ble","platform":"native-desktop","requiredCatalogIds":["m03","t02","m200","m250","m220","m221","m260"],"state":"unsigned"},
     {"id":"native-m04-ble","family":"m04","transport":"ble","platform":"native-desktop","requiredCatalogIds":["m04s-53","m04s-80","m04s-110"],"state":"unsigned"},
     {"id":"native-m110-ble","family":"m110","transport":"ble","platform":"native-desktop","requiredCatalogIds":["m110","m110s"],"state":"provisional","historicalEvidence":{"summary":"M110 printed with 20-byte ATT payloads and Python-identical actions","references":["mb-printer-sdk@0971aec","mb-printer-cli@81ae3f5"],"missingRequiredFields":["serialNumber","firmwareVersion","platformVersion","operatorSignature","retainedTraceArtifact"]}},
+    {"id":"native-m110-usb","family":"m110","transport":"usb","platform":"native-desktop","requiredCatalogIds":["m110s"],"state":"unsigned","historicalEvidence":{"summary":"M110S 0483:5740 answered all six status queries over USB bulk endpoints 0x02/0x81","references":["live-probe-2026-08-30"],"missingRequiredFields":["successfulPhysicalPrint","operatorSignature","retainedTraceArtifact"]}},
     {"id":"native-d-series-ble","family":"d-series","transport":"ble","platform":"native-desktop","requiredCatalogIds":["d-series"],"state":"unsigned"},
     {"id":"native-tspl-ble","family":"tspl","transport":"ble","platform":"native-desktop","requiredCatalogIds":["pm241"],"state":"unsigned"},
     {"id":"native-tspl-usb","family":"tspl","transport":"usb","platform":"native-desktop","requiredCatalogIds":["pm241"],"state":"unsigned"},
@@ -21,14 +22,15 @@
     {"id":"chrome-desktop-m-series-web-bluetooth","family":"m-series","transport":"web-bluetooth","platform":"chrome-desktop","requiredCatalogIds":["m03","t02","m200","m250","m220","m221","m260"],"state":"unsigned"},
     {"id":"chrome-desktop-m04-web-bluetooth","family":"m04","transport":"web-bluetooth","platform":"chrome-desktop","requiredCatalogIds":["m04s-53","m04s-80","m04s-110"],"state":"unsigned"},
     {"id":"chrome-desktop-m110-web-bluetooth","family":"m110","transport":"web-bluetooth","platform":"chrome-desktop","requiredCatalogIds":["m110","m110s"],"state":"unsigned"},
+    {"id":"chrome-desktop-m110-webusb","family":"m110","transport":"webusb","platform":"chrome-desktop","requiredCatalogIds":["m110s"],"state":"unsigned"},
     {"id":"chrome-desktop-d-series-web-bluetooth","family":"d-series","transport":"web-bluetooth","platform":"chrome-desktop","requiredCatalogIds":["d-series"],"state":"unsigned"},
     {"id":"chrome-desktop-tspl-web-bluetooth","family":"tspl","transport":"web-bluetooth","platform":"chrome-desktop","requiredCatalogIds":["pm241"],"state":"unsigned"},
     {"id":"chrome-desktop-tspl-webusb","family":"tspl","transport":"webusb","platform":"chrome-desktop","requiredCatalogIds":["pm241"],"state":"unsigned"},
     {"id":"chrome-desktop-brother-webusb","family":"brother","transport":"webusb","platform":"chrome-desktop","requiredCatalogIds":["ql-1110nwb","ql-1115nwb","ql-1100"],"state":"unsigned"},
     {"id":"chrome-desktop-brother-webserial","family":"brother","transport":"serial","platform":"chrome-desktop","requiredCatalogIds":["ql-1110nwb","ql-1115nwb"],"state":"unsigned","historicalEvidence":{"summary":"macOS port opened at weak RSSI but status timed out and no label printed","references":["mb-label-editor@56677fe"],"missingRequiredFields":["valid32ByteStatus","successfulPhysicalPrint"]}},
     {"id":"edge-desktop-ble","family":"all-bluetooth-families","transport":"web-bluetooth","platform":"edge-desktop","requiredCatalogIds":["p12","a30","m02","m02-pro","m03","t02","m04s-53","m04s-80","m04s-110","m110","m110s","m200","m250","m220","m221","m260","pm241","d-series"],"state":"unsigned"},
-    {"id":"edge-desktop-webusb","family":"usb-families","transport":"webusb","platform":"edge-desktop","requiredCatalogIds":["pm241","ql-1110nwb","ql-1115nwb","ql-1100"],"state":"unsigned"},
+    {"id":"edge-desktop-webusb","family":"usb-families","transport":"webusb","platform":"edge-desktop","requiredCatalogIds":["m110s","pm241","ql-1110nwb","ql-1115nwb","ql-1100"],"state":"unsigned"},
     {"id":"android-chrome-ble","family":"all-bluetooth-families","transport":"web-bluetooth","platform":"android-chrome","requiredCatalogIds":["p12","a30","m02","m02-pro","m03","t02","m04s-53","m04s-80","m04s-110","m110","m110s","m200","m250","m220","m221","m260","pm241","d-series"],"state":"unsigned"},
-    {"id":"android-chrome-webusb","family":"usb-families","transport":"webusb","platform":"android-chrome","requiredCatalogIds":["pm241","ql-1110nwb","ql-1115nwb","ql-1100"],"state":"unsigned"}
+    {"id":"android-chrome-webusb","family":"usb-families","transport":"webusb","platform":"android-chrome","requiredCatalogIds":["m110s","pm241","ql-1110nwb","ql-1115nwb","ql-1100"],"state":"unsigned"}
   ]
 }
