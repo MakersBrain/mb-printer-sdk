@@ -83,3 +83,82 @@ fn reported_media_resolves_to_a_named_roll() {
     assert!(media::match_media(&brother, 7., 3.).is_none());
     assert!(media::presets_for(&capabilities::by_id("d-series").unwrap()).len() > 5);
 }
+
+#[test]
+fn streaming_transports_drop_the_chunk_pacing() {
+    use mb_printer_core::protocol::{self, Action, Options, Raster};
+    let printer = capabilities::by_id("m110").unwrap();
+    let raster = Raster {
+        width_bytes: 48,
+        height: 8,
+        data: vec![0; 48 * 8],
+    };
+    let delays = |options: &Options| {
+        protocol::plan(&printer, &raster, options)
+            .unwrap()
+            .actions
+            .iter()
+            .filter_map(|action| match action {
+                Action::RasterWrite {
+                    delay_after_each_physical_write_ms,
+                    ..
+                } => Some(*delay_after_each_physical_write_ms),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let paced = Options::default();
+    assert_eq!(delays(&paced), vec![20]);
+    let streaming = Options {
+        streaming: true,
+        ..Options::default()
+    };
+    assert_eq!(delays(&streaming), vec![0]);
+}
+
+#[test]
+fn the_compressed_raster_frames_every_block_with_its_length() {
+    use mb_printer_core::protocol::{self, Action, Options, Raster};
+    let printer = capabilities::by_id("m110").unwrap();
+    // Two blocks: the encoder cuts every 4096 bytes of packed raster.
+    let raster = Raster {
+        width_bytes: 48,
+        height: 100,
+        data: vec![0x5a; 4800],
+    };
+    let payload = protocol::lzo_raster(&raster).unwrap();
+    assert_eq!(&payload[..4], [48, 0, 100, 0]);
+    let first =
+        usize::from(payload[4]) + usize::from(payload[5]) * 256 + usize::from(payload[6]) * 65536;
+    let second_at = 7 + first;
+    let second = usize::from(payload[second_at]) + usize::from(payload[second_at + 1]) * 256;
+    assert_eq!(payload.len(), second_at + 3 + second);
+    // Repeated bytes compress, so the wire carries far less than the raster.
+    assert!(payload.len() < raster.data.len() / 4);
+
+    let plan = protocol::plan(
+        &printer,
+        &raster,
+        &Options {
+            lzo: true,
+            ..Options::default()
+        },
+    )
+    .unwrap();
+    let commands: Vec<&[u8]> = plan
+        .actions
+        .iter()
+        .filter_map(|action| match action {
+            Action::CommandWrite { bytes, .. } => Some(bytes.as_slice()),
+            _ => None,
+        })
+        .collect();
+    assert!(commands.contains(&[0x1f, 0x11, 0x35, 1].as_slice()));
+    assert!(commands.contains(&[0x1d, 0x76, 0x30, 0].as_slice()));
+    assert!(commands.contains(&[0x1f, 0x11, 0x35, 0].as_slice()));
+    assert!(
+        plan.actions
+            .iter()
+            .any(|action| matches!(action, Action::RasterWrite { bytes, .. } if bytes == &payload))
+    );
+}

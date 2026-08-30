@@ -98,6 +98,9 @@ fn every_plan_matches_executed_python_actions() {
             cut_every: values["cutEvery"].as_u64().unwrap() as u8,
             compress: values["compress"].as_bool().unwrap(),
             high_quality: values["highQuality"].as_bool().unwrap(),
+            // The reference fixtures predate both and describe a paced, uncompressed job.
+            streaming: false,
+            lzo: false,
         };
         let input = &case["inputRaster"];
         let input_bytes = decode_hex(input["hex"].as_str().unwrap());
