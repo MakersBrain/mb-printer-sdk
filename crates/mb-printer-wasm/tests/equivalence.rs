@@ -218,3 +218,33 @@ fn wasm_facade_rejects_oversized_wire_batch_and_protocol_requests() {
             .contains("copies")
     );
 }
+
+#[test]
+fn wasm_facade_uses_the_portable_bounded_ipp_codec() {
+    use mb_printer_core::ipp::{
+        self, Attribute, AttributeGroup, Message, Value, ValueTag, Version,
+    };
+    let message = Message {
+        version: Version::V2_0,
+        code: 0,
+        request_id: 7,
+        groups: vec![AttributeGroup {
+            tag: ipp::PRINTER_ATTRIBUTES_TAG,
+            attributes: vec![Attribute::new(
+                b"x-vendor".to_vec(),
+                Value::raw(ValueTag::Extension(0x7f), [1, 2, 3]),
+            )],
+        }],
+        original_bytes: Vec::new(),
+    };
+    let bytes = message.encode(ipp::Limits::default()).unwrap();
+    let json = mb_printer_wasm::decode_ipp_json(&bytes, 1024).unwrap();
+    let decoded: Message = serde_json::from_str(&json).unwrap();
+    assert_eq!(decoded.original_bytes, bytes);
+    assert_eq!(decoded.groups, message.groups);
+    assert_eq!(
+        mb_printer_wasm::encode_ipp_json(&json, 1024).unwrap(),
+        bytes
+    );
+    assert!(mb_printer_wasm::decode_ipp_json(&bytes, 8).is_err());
+}

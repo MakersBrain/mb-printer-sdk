@@ -9,6 +9,9 @@ use std::{
     time::Duration,
 };
 
+#[cfg(feature = "snmp")]
+pub mod snmp;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiscoveredPrinter {
     pub transport: &'static str,
@@ -318,18 +321,9 @@ pub mod serial {
 pub mod usb {
     use super::*;
     use rusb::UsbContext as _;
-    use std::collections::BTreeMap;
-
-    pub const MAX_IEEE1284_DEVICE_ID_BYTES: usize = 2048;
-
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    pub struct Ieee1284DeviceId {
-        pub raw: String,
-        pub manufacturer: Option<String>,
-        pub model: Option<String>,
-        pub command_sets: Vec<String>,
-        pub fields: BTreeMap<String, String>,
-    }
+    pub const MAX_IEEE1284_DEVICE_ID_BYTES: usize =
+        mb_printer_core::protocol::ieee1284::MAX_DEVICE_ID_BYTES;
+    pub use mb_printer_core::protocol::ieee1284::DeviceId as Ieee1284DeviceId;
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct UsbPortStatus {
@@ -339,57 +333,8 @@ pub mod usb {
     }
 
     pub fn parse_ieee1284_device_id(data: &[u8]) -> Result<Ieee1284DeviceId, String> {
-        if data.len() < 2 {
-            return Err("short IEEE-1284 device ID".into());
-        }
-        if data.len() > MAX_IEEE1284_DEVICE_ID_BYTES {
-            return Err("IEEE-1284 device ID exceeds limit".into());
-        }
-        let declared = usize::from(u16::from_be_bytes([data[0], data[1]]));
-        if declared < 2 || declared > data.len() || declared > MAX_IEEE1284_DEVICE_ID_BYTES {
-            return Err("invalid IEEE-1284 device ID length".into());
-        }
-        let raw = std::str::from_utf8(&data[2..declared])
-            .map_err(|_| "IEEE-1284 device ID is not UTF-8")?
-            .trim_matches(char::from(0))
-            .trim()
-            .to_owned();
-        if raw.is_empty() || !raw.contains(';') {
-            return Err("malformed IEEE-1284 device ID".into());
-        }
-        let fields = raw
-            .split(';')
-            .filter_map(|field| {
-                let (key, value) = field.split_once(':')?;
-                let key = key.trim().to_ascii_uppercase();
-                let value = value.trim().to_owned();
-                (!key.is_empty() && !value.is_empty()).then_some((key, value))
-            })
-            .collect::<BTreeMap<_, _>>();
-        if fields.is_empty() {
-            return Err("malformed IEEE-1284 device ID fields".into());
-        }
-        let field =
-            |short: &str, long: &str| fields.get(short).or_else(|| fields.get(long)).cloned();
-        let manufacturer = field("MFG", "MANUFACTURER");
-        let model = field("MDL", "MODEL");
-        let command_sets = field("CMD", "COMMAND SET")
-            .map(|value| {
-                value
-                    .split(',')
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .map(str::to_owned)
-                    .collect()
-            })
-            .unwrap_or_default();
-        Ok(Ieee1284DeviceId {
-            raw,
-            manufacturer,
-            model,
-            command_sets,
-            fields,
-        })
+        mb_printer_core::protocol::ieee1284::parse_device_id(data)
+            .map_err(|error| error.to_string())
     }
 
     pub const fn parse_port_status(value: u8) -> UsbPortStatus {
@@ -907,6 +852,9 @@ pub mod usb {
 #[cfg(feature = "dns-sd")]
 pub mod dns_sd;
 
+#[cfg(feature = "ipp")]
+pub mod ipp;
+
 #[cfg(feature = "ble")]
 pub mod ble {
     use super::*;
@@ -917,7 +865,6 @@ pub mod ble {
     use std::future::Future;
     use std::pin::Pin;
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::mpsc::{self, Receiver};
     use tracing::Instrument as _;
     pub trait BleGattBackend {
         fn subscribe(&mut self) -> Result<bool, String>;
@@ -1030,8 +977,8 @@ pub mod ble {
         }
     }
     pub fn discover_btleplug(timeout_ms: u64) -> Result<Vec<DiscoveredPrinter>, String> {
-        let runtime = tokio::runtime::Runtime::new().map_err(|error| error.to_string())?;
-        runtime.block_on(discover_btleplug_async(timeout_ms))
+        let _ = timeout_ms;
+        Err("synchronous BLE discovery is unavailable; use discover_btleplug_async on the caller-owned Tokio runtime".into())
     }
     /// Async BLE discovery for applications that already own a Tokio runtime.
     pub async fn discover_btleplug_async(
@@ -1079,145 +1026,29 @@ pub mod ble {
             discover_btleplug(timeout_ms)
         }
     }
-    pub struct BtleplugBackend {
-        runtime: tokio::runtime::Runtime,
-        peripheral: btleplug::platform::Peripheral,
-        write: btleplug::api::Characteristic,
-        notify: Option<btleplug::api::Characteristic>,
-        notifications: Receiver<Vec<u8>>,
-    }
+    /// Legacy synchronous backend retained for source compatibility. It can no
+    /// longer be constructed because libraries must not create hidden Tokio
+    /// runtimes; use `AsyncBtleplugTransport` instead.
+    pub struct BtleplugBackend;
     impl BtleplugBackend {
         pub fn connect(
-            address: &str,
-            write_uuid: Option<uuid::Uuid>,
-            notify_uuid: Option<uuid::Uuid>,
-            scan_timeout_ms: u64,
+            _address: &str,
+            _write_uuid: Option<uuid::Uuid>,
+            _notify_uuid: Option<uuid::Uuid>,
+            _scan_timeout_ms: u64,
         ) -> Result<Self, String> {
-            let runtime = tokio::runtime::Runtime::new().map_err(|error| error.to_string())?;
-            let (peripheral, write, notify, mut stream) = runtime.block_on(async {
-                let manager = btleplug::platform::Manager::new()
-                    .await
-                    .map_err(|error| error.to_string())?;
-                let adapters = manager
-                    .adapters()
-                    .await
-                    .map_err(|error| error.to_string())?;
-                let mut selected = None;
-                for adapter in adapters {
-                    adapter
-                        .start_scan(ScanFilter::default())
-                        .await
-                        .map_err(|error| error.to_string())?;
-                    tokio::time::sleep(Duration::from_millis(scan_timeout_ms)).await;
-                    for peripheral in adapter
-                        .peripherals()
-                        .await
-                        .map_err(|error| error.to_string())?
-                    {
-                        if peripheral
-                            .address()
-                            .to_string()
-                            .eq_ignore_ascii_case(address)
-                        {
-                            selected = Some(peripheral);
-                            break;
-                        }
-                    }
-                    if selected.is_some() {
-                        break;
-                    }
-                }
-                let peripheral =
-                    selected.ok_or_else(|| format!("BLE peripheral not found: {address}"))?;
-                if !peripheral
-                    .is_connected()
-                    .await
-                    .map_err(|error| error.to_string())?
-                {
-                    peripheral
-                        .connect()
-                        .await
-                        .map_err(|error| error.to_string())?
-                }
-                peripheral
-                    .discover_services()
-                    .await
-                    .map_err(|error| error.to_string())?;
-                let characteristics = peripheral.characteristics();
-                let write = characteristics
-                    .iter()
-                    .find(|item| {
-                        write_uuid.map_or(
-                            item.properties
-                                .contains(CharPropFlags::WRITE_WITHOUT_RESPONSE)
-                                | item.properties.contains(CharPropFlags::WRITE),
-                            |uuid| item.uuid == uuid,
-                        )
-                    })
-                    .cloned()
-                    .ok_or_else(|| "BLE write characteristic not found".to_owned())?;
-                let notify = characteristics
-                    .iter()
-                    .find(|item| {
-                        notify_uuid
-                            .map_or(item.properties.contains(CharPropFlags::NOTIFY), |uuid| {
-                                item.uuid == uuid
-                            })
-                    })
-                    .cloned();
-                let stream = peripheral
-                    .notifications()
-                    .await
-                    .map_err(|error| error.to_string())?;
-                Ok::<_, String>((peripheral, write, notify, stream))
-            })?;
-            let (tx, rx) = mpsc::channel();
-            runtime.spawn(
-                async move {
-                    while let Some(notification) = stream.next().await {
-                        if tx.send(notification.value).is_err() {
-                            break;
-                        }
-                    }
-                }
-                .instrument(tracing::Span::current()),
-            );
-            Ok(Self {
-                runtime,
-                peripheral,
-                write,
-                notify,
-                notifications: rx,
-            })
+            Err("synchronous BLE connection is unavailable; use AsyncBtleplugTransport::connect on the caller-owned Tokio runtime".into())
         }
     }
     impl BleGattBackend for BtleplugBackend {
         fn subscribe(&mut self) -> Result<bool, String> {
-            let Some(characteristic) = &self.notify else {
-                return Ok(false);
-            };
-            self.runtime
-                .block_on(self.peripheral.subscribe(characteristic))
-                .map_err(|error| error.to_string())?;
-            Ok(true)
+            Err("synchronous BLE backend is unavailable".into())
         }
-        fn write_without_response(&mut self, bytes: &[u8]) -> Result<(), String> {
-            self.runtime
-                .block_on(
-                    self.peripheral
-                        .write(&self.write, bytes, WriteType::WithoutResponse),
-                )
-                .map_err(|error| error.to_string())
+        fn write_without_response(&mut self, _bytes: &[u8]) -> Result<(), String> {
+            Err("synchronous BLE backend is unavailable".into())
         }
-        fn wait_notification(&mut self, timeout_ms: u64) -> Result<Option<Vec<u8>>, String> {
-            match self
-                .notifications
-                .recv_timeout(Duration::from_millis(timeout_ms))
-            {
-                Ok(bytes) => Ok(Some(bytes)),
-                Err(mpsc::RecvTimeoutError::Timeout) => Ok(None),
-                Err(error) => Err(error.to_string()),
-            }
+        fn wait_notification(&mut self, _timeout_ms: u64) -> Result<Option<Vec<u8>>, String> {
+            Err("synchronous BLE backend is unavailable".into())
         }
     }
     pub type BtleplugTransport = BleTransport<BtleplugBackend>;
@@ -1387,6 +1218,7 @@ pub mod ble {
 #[cfg(feature = "wifi")]
 pub mod wifi {
     use crate::Transport;
+    use mb_printer_core::ipp::{self as ipp_codec, Limits as IppLimits, ValueData as IppValueData};
     use mb_printer_core::protocol::brother::wifi::{
         self as core_wifi, WirelessSettings as TypedWirelessSettings,
     };
@@ -1417,45 +1249,7 @@ pub mod wifi {
     pub trait WifiProvisioner {
         fn provision(&mut self, credentials: &WifiCredentials) -> Result<(), String>;
     }
-    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-    pub enum IppScheme {
-        #[default]
-        Ipp,
-        Ipps,
-    }
-    impl IppScheme {
-        pub const fn as_str(self) -> &'static str {
-            match self {
-                Self::Ipp => "ipp",
-                Self::Ipps => "ipps",
-            }
-        }
-    }
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    pub struct IppEndpoint {
-        pub scheme: IppScheme,
-        pub host: String,
-        pub port: u16,
-        pub resource: String,
-    }
-    impl IppEndpoint {
-        pub fn ipp(host: impl Into<String>, port: u16, resource: impl Into<String>) -> Self {
-            Self {
-                scheme: IppScheme::Ipp,
-                host: host.into(),
-                port,
-                resource: resource.into(),
-            }
-        }
-        pub fn ipps(host: impl Into<String>, port: u16, resource: impl Into<String>) -> Self {
-            Self {
-                scheme: IppScheme::Ipps,
-                host: host.into(),
-                port,
-                resource: resource.into(),
-            }
-        }
-    }
+    pub use super::ipp::{IppEndpoint, IppScheme};
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct IppPrinterStatus {
         pub printer_state: Option<u32>,
@@ -1537,7 +1331,7 @@ pub mod wifi {
         stream
             .set_write_timeout(Some(timeout))
             .map_err(|error| IppProbeError::Transport(error.to_string()))?;
-        let body = ipp_status_request(endpoint);
+        let body = ipp_status_request(endpoint)?;
         let header = format!(
             "POST {} HTTP/1.1\r\nHost: {}:{}\r\nContent-Type: application/ipp\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
             endpoint.resource,
@@ -1571,95 +1365,50 @@ pub mod wifi {
         }
         parse_ipp_status(&response[split + 4..]).map_err(IppProbeError::InvalidResponse)
     }
-    fn ipp_attribute(output: &mut Vec<u8>, tag: u8, name: &str, value: &[u8]) {
-        output.push(tag);
-        output.extend(u16::try_from(name.len()).unwrap_or(u16::MAX).to_be_bytes());
-        output.extend(name.as_bytes());
-        output.extend(u16::try_from(value.len()).unwrap_or(u16::MAX).to_be_bytes());
-        output.extend(value);
-    }
-    fn ipp_status_request(endpoint: &IppEndpoint) -> Vec<u8> {
-        let mut body = vec![2, 0, 0, 0x0b, 0, 0, 0, 1, 1];
-        ipp_attribute(&mut body, 0x47, "attributes-charset", b"utf-8");
-        ipp_attribute(&mut body, 0x48, "attributes-natural-language", b"en");
+    fn ipp_status_request(endpoint: &IppEndpoint) -> Result<Vec<u8>, IppProbeError> {
         let uri = format!(
             "ipp://{}:{}{}",
             endpoint.host, endpoint.port, endpoint.resource
         );
-        ipp_attribute(&mut body, 0x45, "printer-uri", uri.as_bytes());
-        for (index, name) in ["printer-state", "printer-state-reasons", "media-ready"]
-            .into_iter()
-            .enumerate()
-        {
-            ipp_attribute(
-                &mut body,
-                0x44,
-                if index == 0 {
-                    "requested-attributes"
-                } else {
-                    ""
-                },
-                name.as_bytes(),
-            );
-        }
-        body.push(3);
-        body
+        ipp_codec::get_printer_attributes_request(
+            &uri,
+            ["printer-state", "printer-state-reasons", "media-ready"],
+            None,
+            1,
+        )
+        .encode(IppLimits::default())
+        .map_err(|error| IppProbeError::InvalidResponse(error.to_string()))
     }
     pub fn parse_ipp_status(body: &[u8]) -> Result<IppPrinterStatus, String> {
-        if body.len() < 9 || u16::from_be_bytes([body[2], body[3]]) >= 0x0100 {
+        let response =
+            ipp_codec::decode(body, IppLimits::default()).map_err(|error| error.to_string())?;
+        if response.code >= 0x0100 {
             return Err("IPP operation failed".into());
         }
-        let mut offset = 8usize;
-        let mut previous_name = String::new();
         let mut status = IppPrinterStatus {
             printer_state: None,
             reasons: Vec::new(),
             media_ready: Vec::new(),
         };
-        while offset < body.len() {
-            let tag = body[offset];
-            offset += 1;
-            if tag == 3 {
-                return Ok(status);
-            }
-            if tag <= 0x0f {
-                previous_name.clear();
-                continue;
-            }
-            if offset + 2 > body.len() {
-                return Err("truncated IPP attribute".into());
-            }
-            let name_length = usize::from(u16::from_be_bytes([body[offset], body[offset + 1]]));
-            offset += 2;
-            if offset + name_length + 2 > body.len() {
-                return Err("truncated IPP attribute".into());
-            }
-            if name_length > 0 {
-                previous_name = String::from_utf8(body[offset..offset + name_length].to_vec())
-                    .map_err(|_| "IPP attribute name is not UTF-8".to_owned())?;
-            }
-            offset += name_length;
-            let value_length = usize::from(u16::from_be_bytes([body[offset], body[offset + 1]]));
-            offset += 2;
-            if offset + value_length > body.len() {
-                return Err("truncated IPP value".into());
-            }
-            let value = &body[offset..offset + value_length];
-            offset += value_length;
-            match previous_name.as_str() {
-                "printer-state" if tag == 0x23 && value.len() == 4 => {
-                    status.printer_state = Some(u32::from_be_bytes(value.try_into().unwrap()))
+        for group in response.groups {
+            for attribute in group.attributes {
+                for value in attribute.values {
+                    match (attribute.name.as_slice(), value.data) {
+                        (b"printer-state", IppValueData::Enum(state)) if state >= 0 => {
+                            status.printer_state = u32::try_from(state).ok();
+                        }
+                        (b"printer-state-reasons", IppValueData::Bytes(value)) => status
+                            .reasons
+                            .push(String::from_utf8_lossy(&value).into_owned()),
+                        (b"media-ready", IppValueData::Bytes(value)) => status
+                            .media_ready
+                            .push(String::from_utf8_lossy(&value).into_owned()),
+                        _ => {}
+                    }
                 }
-                "printer-state-reasons" => status
-                    .reasons
-                    .push(String::from_utf8_lossy(value).into_owned()),
-                "media-ready" => status
-                    .media_ready
-                    .push(String::from_utf8_lossy(value).into_owned()),
-                _ => {}
             }
         }
-        Err("IPP response has no end marker".into())
+        Ok(status)
     }
     /// String-valued compatibility adapter for the original native API.
     /// New callers should construct the typed core `WirelessSettings` directly.

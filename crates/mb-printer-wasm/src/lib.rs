@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #![forbid(unsafe_code)]
 use mb_printer_core::{
-    Document, capabilities, export, importer, materialize, media, pdf_import, protocol, render,
-    template,
+    Document, capabilities, export, importer, ipp, materialize, media, pdf_import, protocol,
+    render, template,
 };
 use std::collections::BTreeMap;
 use std::num::NonZeroU16;
@@ -668,6 +668,28 @@ pub fn parse_brother_status_json(data: &[u8]) -> Result<String, String> {
     let status = protocol::brother_parse_status(data).map_err(|e| e.to_owned())?;
     serde_json::to_string(&status).map_err(|e| e.to_string())
 }
+
+/// Decode bounded IPP bytes using the same portable codec as native clients.
+pub fn decode_ipp_json(data: &[u8], maximum_message_bytes: usize) -> Result<String, String> {
+    let limits = ipp::Limits {
+        max_message_bytes: maximum_message_bytes,
+        ..ipp::Limits::default()
+    };
+    let message = ipp::decode(data, limits).map_err(|error| error.to_string())?;
+    serde_json::to_string(&message).map_err(|error| error.to_string())
+}
+
+/// Encode a typed IPP message without accessing HTTP, TLS, Tokio, or browser
+/// globals. Promise/AbortSignal transport adapters remain in TypeScript.
+pub fn encode_ipp_json(input: &str, maximum_message_bytes: usize) -> Result<Vec<u8>, String> {
+    let message: ipp::Message = serde_json::from_str(input).map_err(|error| error.to_string())?;
+    message
+        .encode(ipp::Limits {
+            max_message_bytes: maximum_message_bytes,
+            ..ipp::Limits::default()
+        })
+        .map_err(|error| error.to_string())
+}
 pub fn render_protocol_plan(input: &str, model: &str) -> Result<String, String> {
     render_protocol_plan_with_options(input, model, "{}")
 }
@@ -913,6 +935,18 @@ mod bindings {
     #[wasm_bindgen(js_name=parseBrotherStatus)]
     pub fn parse_brother_status(data: &[u8]) -> Result<String, JsValue> {
         super::parse_brother_status_json(data).map_err(|e| JsValue::from_str(&e))
+    }
+
+    #[wasm_bindgen(js_name=decodeIpp)]
+    pub fn decode_ipp(data: &[u8], maximum_message_bytes: usize) -> Result<String, JsValue> {
+        super::decode_ipp_json(data, maximum_message_bytes)
+            .map_err(|error| JsValue::from_str(&error))
+    }
+
+    #[wasm_bindgen(js_name=encodeIpp)]
+    pub fn encode_ipp(input: &str, maximum_message_bytes: usize) -> Result<Vec<u8>, JsValue> {
+        super::encode_ipp_json(input, maximum_message_bytes)
+            .map_err(|error| JsValue::from_str(&error))
     }
     #[wasm_bindgen(js_name=renderProtocolPlan)]
     pub fn render_protocol_plan(input: &str, model: &str) -> Result<String, JsValue> {

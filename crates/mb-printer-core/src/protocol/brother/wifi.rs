@@ -501,18 +501,32 @@ fn decode_ssid(value: &str) -> String {
 pub fn wireless_status_plan() -> Plan {
     let mut actions = Vec::with_capacity(WirelessField::ALL.len() * 2);
     for field in WirelessField::ALL {
-        actions.push(command("Brother OBJBRNET inquire", field.command()));
-        actions.push(Action::CollectResponse {
-            timeout_ms: 2000,
-            idle_timeout_ms: 200,
-            maximum_bytes: 4 * 1024,
-            validation: ResponseValidation::BrotherObjbrnet,
-        });
+        actions.extend(wireless_field_plan(field).actions);
     }
     Plan {
         protocol: Protocol::Brother,
         source_commit: SOURCE_COMMIT.into(),
         actions,
+    }
+}
+
+/// Builds one bounded, read-only query for a known OBJBRNET field.
+///
+/// Keeping this constructor keyed by [`WirelessField`] prevents callers from
+/// accidentally turning arbitrary, unqualified OIDs into device probes.
+pub fn wireless_field_plan(field: WirelessField) -> Plan {
+    Plan {
+        protocol: Protocol::Brother,
+        source_commit: SOURCE_COMMIT.into(),
+        actions: vec![
+            command("Brother OBJBRNET inquire", field.command()),
+            Action::CollectResponse {
+                timeout_ms: 2000,
+                idle_timeout_ms: 200,
+                maximum_bytes: 4 * 1024,
+                validation: ResponseValidation::BrotherObjbrnet,
+            },
+        ],
     }
 }
 

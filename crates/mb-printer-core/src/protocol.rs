@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub mod brother;
+pub mod ieee1284;
 
 pub use brother::status::{BrotherStatus, parse_status as brother_parse_status};
 

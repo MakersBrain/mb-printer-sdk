@@ -1,0 +1,162 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+syntax = "proto3";
+
+package makersbrain.printer.agent.v1;
+
+service AgentSession {
+  rpc Session(stream AgentToCloud) returns (stream CloudToAgent);
+}
+
+message AgentToCloud {
+  oneof message {
+    AgentCapabilities capabilities = 1;
+    ProtocolRequestAccepted accepted = 2;
+    ProtocolRequestRejected rejected = 3;
+    ProtocolResult result = 4;
+  }
+}
+
+message CloudToAgent {
+  oneof message {
+    ProtocolRequest request = 1;
+    CancelProtocolRequest cancel = 2;
+  }
+}
+
+message AgentCapabilities {
+  string agent_id = 1;
+  repeated uint32 contract_versions = 2;
+  repeated OperationKind operations = 3;
+  repeated string transports = 4;
+  uint64 maximum_response_bytes = 5;
+  uint64 maximum_timeout_ms = 6;
+  bool supports_redaction = 7;
+  repeated PublishedPrinter printers = 8;
+}
+
+message PublishedPrinter {
+  string printer_id = 1;
+  uint64 endpoint_generation = 2;
+  repeated OperationKind operations = 3;
+}
+
+enum OperationKind {
+  OPERATION_KIND_UNSPECIFIED = 0;
+  OPERATION_KIND_IPP_INSPECT = 1;
+  OPERATION_KIND_READ_SETTING = 2;
+  OPERATION_KIND_RUN_PROBE = 3;
+  OPERATION_KIND_PLAN_CHANGE = 4;
+  OPERATION_KIND_APPLY_CHANGE = 5;
+}
+
+message ProtocolOperationLimits {
+  uint64 timeout_ms = 1;
+  uint64 maximum_response_bytes = 2;
+}
+
+message ProtocolRequest {
+  string request_id = 1;
+  uint32 contract_version = 2;
+  string authenticated_principal = 3;
+  string printer_id = 4;
+  uint64 endpoint_generation = 5;
+  uint64 expires_at_unix_ms = 6;
+  ProtocolOperationLimits limits = 7;
+  oneof operation {
+    IppInspect ipp_inspect = 10;
+    ReadSetting read_setting = 11;
+    RunProbe run_probe = 12;
+    PlanChange plan_change = 13;
+    ApplyChange apply_change = 14;
+  }
+}
+
+message IppInspect {
+  repeated string requested_attributes = 1;
+  optional string document_format = 2;
+  OutputMode output_mode = 3;
+}
+
+message ReadSetting { string setting_id = 1; }
+message RunProbe { string probe_id = 1; }
+
+message PlanChange {
+  string setting_id = 1;
+  bytes requested_value = 2;
+  string protocol = 3;
+}
+
+message ApplyChange {
+  string setting_id = 1;
+  bytes expected_old_value_hash = 2;
+  bytes requested_value = 3;
+  string protocol = 4;
+  uint64 plan_expires_at_unix_ms = 5;
+  bytes expected_requested_value_hash = 6;
+}
+
+enum OutputMode {
+  OUTPUT_MODE_NORMALIZED_REDACTED = 0;
+  OUTPUT_MODE_RAW_REDACTED = 1;
+  OUTPUT_MODE_RAW_SENSITIVE = 2;
+}
+
+message ProtocolRequestAccepted {
+  string request_id = 1;
+  uint64 accepted_at_unix_ms = 2;
+}
+
+message ProtocolRequestRejected {
+  string request_id = 1;
+  RejectionReason reason = 2;
+  string safe_message = 3;
+}
+
+enum RejectionReason {
+  REJECTION_REASON_UNSPECIFIED = 0;
+  REJECTION_REASON_UNSUPPORTED_VERSION = 1;
+  REJECTION_REASON_UNSUPPORTED_OPERATION = 2;
+  REJECTION_REASON_UNKNOWN_PRINTER = 3;
+  REJECTION_REASON_STALE_ENDPOINT = 4;
+  REJECTION_REASON_EXPIRED = 5;
+  REJECTION_REASON_UNAUTHORIZED = 6;
+  REJECTION_REASON_LIMIT_EXCEEDED = 7;
+  REJECTION_REASON_POLICY = 8;
+}
+
+message CancelProtocolRequest { string request_id = 1; }
+
+message ProtocolResult {
+  string request_id = 1;
+  ResultOutcome outcome = 2;
+  bytes bounded_response = 3;
+  repeated EvidenceOrigin evidence = 4;
+  OutputMode output_mode = 5;
+  string safe_error = 6;
+  bool persistence_allowed = 7;
+  bool logging_allowed = 8;
+}
+
+enum ResultOutcome {
+  RESULT_OUTCOME_UNSPECIFIED = 0;
+  RESULT_OUTCOME_SUCCEEDED = 1;
+  RESULT_OUTCOME_REJECTED = 2;
+  RESULT_OUTCOME_CANCELLED = 3;
+  RESULT_OUTCOME_TIMED_OUT = 4;
+  RESULT_OUTCOME_RESPONSE_TOO_LARGE = 5;
+  RESULT_OUTCOME_DISCONNECTED = 6;
+  RESULT_OUTCOME_AMBIGUOUS_WRITE = 7;
+  RESULT_OUTCOME_FAILED = 8;
+}
+
+message EvidenceOrigin {
+  string agent_id = 1;
+  string printer_id = 2;
+  string endpoint = 3;
+  uint64 endpoint_generation = 4;
+  string transport = 5;
+  string protocol = 6;
+  string request_id = 7;
+  optional string probe_id = 8;
+  optional string qualification_id = 9;
+}
