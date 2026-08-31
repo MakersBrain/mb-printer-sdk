@@ -16,6 +16,7 @@ categories = ["hardware-support"]
 include = ["/src/**", "/tests/**", "/Cargo.toml", "/README.md", "/LICENSE"]
 [features]
 default = []
+brother-tools = ["dep:serde_json"]
 bluetooth-rfcomm = ["dep:libc"]
 serial = ["dep:serialport"]
 usb = ["dep:rusb"]
@@ -41,6 +42,12 @@ tokio = { version = "1", features = ["rt-multi-thread", "time", "sync", "net"], 
 uuid = { version = "1", optional = true }
 libc = { version = "0.2", optional = true }
 mdns-sd = { version = "0.21", optional = true }
+serde_json = { workspace = true, optional = true }
 [dev-dependencies]
 serde.workspace = true
 serde_json.workspace = true
+
+[[bin]]
+name = "brother-settings-retrieve"
+path = "src/bin/brother-settings-retrieve.rs"
+required-features = ["brother-tools"]
