@@ -51,3 +51,8 @@ serde_json.workspace = true
 name = "brother-settings-retrieve"
 path = "src/bin/brother-settings-retrieve.rs"
 required-features = ["brother-tools"]
+
+[[bin]]
+name = "brother-device-settings-retrieve"
+path = "src/bin/brother-device-settings-retrieve.rs"
+required-features = ["brother-tools"]
