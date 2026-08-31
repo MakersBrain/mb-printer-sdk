@@ -10,7 +10,7 @@ license = "AGPL-3.0-or-later"
 authors = ["Makers' Brain contributors"]
 repository = "https://github.com/MakersBrain/mb-printer-sdk"
 homepage = "https://github.com/MakersBrain/mb-printer-sdk"
-rust-version = "1.92"
+rust-version = "1.98"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
