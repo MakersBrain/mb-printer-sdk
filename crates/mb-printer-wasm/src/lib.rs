@@ -939,12 +939,14 @@ mod bindings {
 
     #[wasm_bindgen(js_name=decodeIpp)]
     pub fn decode_ipp(data: &[u8], maximum_message_bytes: usize) -> Result<String, JsValue> {
-        super::decode_ipp_json(data, maximum_message_bytes).map_err(js_error)
+        super::decode_ipp_json(data, maximum_message_bytes)
+            .map_err(|error| JsValue::from_str(&error))
     }
 
     #[wasm_bindgen(js_name=encodeIpp)]
     pub fn encode_ipp(input: &str, maximum_message_bytes: usize) -> Result<Vec<u8>, JsValue> {
-        super::encode_ipp_json(input, maximum_message_bytes).map_err(js_error)
+        super::encode_ipp_json(input, maximum_message_bytes)
+            .map_err(|error| JsValue::from_str(&error))
     }
     #[wasm_bindgen(js_name=renderProtocolPlan)]
     pub fn render_protocol_plan(input: &str, model: &str) -> Result<String, JsValue> {

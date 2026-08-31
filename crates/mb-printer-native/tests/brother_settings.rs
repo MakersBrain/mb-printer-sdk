@@ -69,7 +69,13 @@ fn retrieval_uses_only_the_fixed_read_only_allowlist() {
 
     assert_eq!(inspection.observations.len(), WirelessField::ALL.len());
     assert_eq!(transport.writes.len(), WirelessField::ALL.len() * 4);
-    for (parts, field) in transport.writes.chunks_exact(4).zip(WirelessField::ALL) {
+    for (parts, field) in transport
+        .writes
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(WirelessField::ALL)
+    {
         let request = &parts[0];
         assert!(request.starts_with(PJL_HEADER));
         assert!(request.ends_with(PJL_FOOTER));
