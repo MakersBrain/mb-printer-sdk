@@ -23,7 +23,8 @@ usb = ["dep:rusb"]
 ble = ["dep:btleplug", "dep:futures-util", "dep:tokio", "dep:uuid"]
 ble-vendored-dbus = ["ble", "dep:dbus"]
 ipp = ["dep:futures-util", "dep:reqwest", "dep:tokio"]
-snmp = ["dep:tokio"]
+snmp = ["dep:async-snmp", "dep:serde", "dep:serde_json", "dep:tokio"]
+snmp-v3 = ["snmp", "async-snmp/crypto-rustcrypto"]
 wifi = ["ipp"]
 dns-sd = ["wifi", "dep:mdns-sd"]
 native-input = []
@@ -32,6 +33,7 @@ mb-printer-core = { version = "=0.1.0", path = "../mb-printer-core" }
 thiserror.workspace = true
 sha2.workspace = true
 tracing.workspace = true
+async-snmp = { workspace = true, optional = true }
 serialport = { version = "4.8", default-features = false, optional = true }
 rusb = { version = "0.9", features = ["vendored"], optional = true }
 btleplug = { version = "0.11", optional = true }
@@ -43,6 +45,7 @@ uuid = { version = "1", optional = true }
 libc = { version = "0.2", optional = true }
 mdns-sd = { version = "0.21", optional = true }
 serde_json = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
 [dev-dependencies]
 serde.workspace = true
 serde_json.workspace = true
@@ -56,3 +59,8 @@ required-features = ["brother-tools"]
 name = "brother-device-settings-retrieve"
 path = "src/bin/brother-device-settings-retrieve.rs"
 required-features = ["brother-tools"]
+
+[[bin]]
+name = "mb-printer-snmp"
+path = "src/bin/mb-printer-snmp.rs"
+required-features = ["snmp"]

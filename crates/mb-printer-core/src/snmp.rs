@@ -3,6 +3,7 @@
 //! It intentionally implements only GET/GETNEXT requests and RESPONSE values.
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use thiserror::Error;
 
@@ -48,9 +49,136 @@ pub struct RegisteredObject {
     pub sensitive: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ObjectKey(String);
+
+impl ObjectKey {
+    pub fn new(value: impl Into<String>) -> Result<Self, SnmpError> {
+        let value = value.into();
+        let valid = !value.is_empty()
+            && value.len() <= 128
+            && value.bytes().all(|byte| {
+                byte.is_ascii_lowercase()
+                    || byte.is_ascii_digit()
+                    || matches!(byte, b'.' | b'-' | b'_')
+            });
+        valid
+            .then_some(Self(value))
+            .ok_or(SnmpError::InvalidObjectKey)
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for ObjectKey {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Sensitivity {
+    Public,
+    Identifier,
+    Secret,
+}
+
+impl Sensitivity {
+    pub const fn is_sensitive(self) -> bool {
+        !matches!(self, Self::Public)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ObjectSyntax {
+    Integer,
+    Octets,
+    Utf8 { trim_trailing_nul: bool },
+    Ipv4,
+    ObjectIdentifier,
+    Counter,
+    BrotherFirmwareRecord,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceQualification {
+    pub manufacturer: String,
+    pub models: Vec<String>,
+    pub firmware: Option<String>,
+    pub qualification_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ValueConstraint {
+    IntegerRange { minimum: i64, maximum: i64 },
+    OctetLength { minimum: usize, maximum: usize },
+    Utf8Length { minimum: usize, maximum: usize },
+    Values(Vec<SetValue>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", tag = "kind", content = "value")]
+pub enum SetValue {
+    Integer(i64),
+    Octets(Vec<u8>),
+    Text(String),
+    IpAddress([u8; 4]),
+    ObjectId(ObjectId),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WriteRisk {
+    Low,
+    Configuration,
+    Connectivity,
+    Destructive,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Verification {
+    ReadBackSameObject,
+    ReadBack { key: ObjectKey, expected: SetValue },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WriteDefinition {
+    pub constraint: ValueConstraint,
+    pub risk: WriteRisk,
+    pub verification: Verification,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", tag = "access")]
+pub enum ObjectAccess {
+    ReadOnly,
+    ConfirmedWrite { definition: WriteDefinition },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ObjectDefinition {
+    pub key: ObjectKey,
+    pub oid: ObjectId,
+    pub syntax: ObjectSyntax,
+    pub sensitivity: Sensitivity,
+    pub access: ObjectAccess,
+    pub qualification: DeviceQualification,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ObjectRegistry {
     objects: BTreeMap<ObjectId, RegisteredObject>,
+    definitions: BTreeMap<ObjectKey, ObjectDefinition>,
 }
 
 impl ObjectRegistry {
@@ -64,6 +192,38 @@ impl ObjectRegistry {
 
     pub fn get(&self, oid: &ObjectId) -> Option<&RegisteredObject> {
         self.objects.get(oid)
+    }
+
+    pub fn register_definition(&mut self, definition: ObjectDefinition) -> Result<(), SnmpError> {
+        if self.objects.contains_key(&definition.oid)
+            || self.definitions.contains_key(&definition.key)
+        {
+            return Err(SnmpError::DuplicateObject);
+        }
+        self.objects.insert(
+            definition.oid.clone(),
+            RegisteredObject {
+                oid: definition.oid.clone(),
+                semantic_id: definition.key.to_string(),
+                sensitive: definition.sensitivity.is_sensitive(),
+            },
+        );
+        self.definitions.insert(definition.key.clone(), definition);
+        Ok(())
+    }
+
+    pub fn definition(&self, key: &ObjectKey) -> Option<&ObjectDefinition> {
+        self.definitions.get(key)
+    }
+
+    pub fn definition_for_oid(&self, oid: &ObjectId) -> Option<&ObjectDefinition> {
+        self.definitions
+            .values()
+            .find(|definition| &definition.oid == oid)
+    }
+
+    pub fn definitions(&self) -> impl Iterator<Item = &ObjectDefinition> {
+        self.definitions.values()
     }
 
     pub fn permits_root(&self, root: &ObjectId) -> bool {
@@ -93,13 +253,25 @@ impl Default for DecodeLimits {
 pub enum ObjectValue {
     Integer(i64),
     Bytes(Vec<u8>),
+    Null,
     ObjectId(ObjectId),
     IpAddress([u8; 4]),
+    Counter32(u32),
+    Gauge32(u32),
+    Unsigned32(u32),
+    TimeTicks(u32),
+    Opaque(Vec<u8>),
+    Nsap(Vec<u8>),
+    Counter64(u64),
+    /// Compatibility representation retained for older callers.
     Counter(u64),
     NoSuchObject,
     NoSuchInstance,
     EndOfMibView,
-    Unknown { tag: u8, bytes: Vec<u8> },
+    Unknown {
+        tag: u8,
+        bytes: Vec<u8>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -115,7 +287,29 @@ pub struct Response {
     pub error_status: i32,
     pub error_index: i32,
     pub varbinds: Vec<VarBind>,
-    pub original_bytes: Vec<u8>,
+    pub evidence: ResponseEvidence,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResponseEvidence {
+    pub credential_elided_hash: [u8; 32],
+    pub original_length: usize,
+    pub sanitized_bytes: Option<Vec<u8>>,
+}
+
+impl ResponseEvidence {
+    pub fn from_structured(varbinds: &[VarBind]) -> Self {
+        let bytes = serde_json::to_vec(varbinds).expect("SNMP varbinds are serializable");
+        let mut digest = Sha256::new();
+        digest.update(b"mb-printer-snmp-structured-evidence-v1\0");
+        digest.update(&bytes);
+        Self {
+            credential_elided_hash: digest.finalize().into(),
+            original_length: 0,
+            sanitized_bytes: None,
+        }
+    }
 }
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
@@ -130,6 +324,12 @@ pub enum SnmpError {
     Malformed,
     #[error("SNMP response request ID did not match")]
     RequestIdMismatch,
+    #[error("invalid semantic SNMP object key")]
+    InvalidObjectKey,
+    #[error("duplicate SNMP object definition")]
+    DuplicateObject,
+    #[error("SNMP value does not satisfy the registered syntax or constraint")]
+    InvalidValue,
 }
 
 pub fn encode_get(
@@ -221,27 +421,109 @@ pub fn decode_response(
             value: decode_value(tag, value)?,
         });
     }
+    let sanitized = sanitize_v2c_message(bytes)?;
+    let mut digest = Sha256::new();
+    digest.update(b"mb-printer-snmp-v2c-evidence-v1\0");
+    digest.update(&sanitized);
     Ok(Response {
         request_id,
         error_status,
         error_index,
         varbinds,
-        original_bytes: bytes.to_vec(),
+        evidence: ResponseEvidence {
+            credential_elided_hash: digest.finalize().into(),
+            original_length: bytes.len(),
+            sanitized_bytes: Some(sanitized),
+        },
     })
+}
+
+fn sanitize_v2c_message(bytes: &[u8]) -> Result<Vec<u8>, SnmpError> {
+    let mut sanitized = bytes.to_vec();
+    let mut outer = Cursor::new(bytes).nested(0x30)?;
+    outer.integer()?;
+    let value_start = outer.offset;
+    let community = outer.value(0x04, 255)?;
+    let value_end = outer.offset;
+    let header_length = value_end
+        .checked_sub(value_start)
+        .and_then(|length| length.checked_sub(community.len()))
+        .ok_or(SnmpError::Malformed)?;
+    let outer_header = bytes.len() - outer.bytes.len();
+    let start = outer_header + value_start + header_length;
+    let end = start
+        .checked_add(community.len())
+        .ok_or(SnmpError::Malformed)?;
+    let target = sanitized.get_mut(start..end).ok_or(SnmpError::Malformed)?;
+    target.fill(b'*');
+    Ok(sanitized)
+}
+
+pub fn validate_set_value(
+    definition: &ObjectDefinition,
+    value: &SetValue,
+) -> Result<(), SnmpError> {
+    let syntax_matches = matches!(
+        (&definition.syntax, value),
+        (ObjectSyntax::Integer, SetValue::Integer(_))
+            | (ObjectSyntax::Octets, SetValue::Octets(_))
+            | (ObjectSyntax::Utf8 { .. }, SetValue::Text(_))
+            | (ObjectSyntax::Ipv4, SetValue::IpAddress(_))
+            | (ObjectSyntax::ObjectIdentifier, SetValue::ObjectId(_))
+    );
+    if !syntax_matches {
+        return Err(SnmpError::InvalidValue);
+    }
+    let ObjectAccess::ConfirmedWrite { definition: write } = &definition.access else {
+        return Err(SnmpError::UnregisteredObject);
+    };
+    let valid = match (&write.constraint, value) {
+        (ValueConstraint::IntegerRange { minimum, maximum }, SetValue::Integer(value)) => {
+            (minimum..=maximum).contains(&value)
+        }
+        (ValueConstraint::OctetLength { minimum, maximum }, SetValue::Octets(value)) => {
+            (*minimum..=*maximum).contains(&value.len())
+        }
+        (ValueConstraint::Utf8Length { minimum, maximum }, SetValue::Text(value)) => {
+            (*minimum..=*maximum).contains(&value.len())
+        }
+        (ValueConstraint::Values(values), value) => values.contains(value),
+        _ => false,
+    };
+    valid.then_some(()).ok_or(SnmpError::InvalidValue)
 }
 
 fn decode_value(tag: u8, bytes: &[u8]) -> Result<ObjectValue, SnmpError> {
     Ok(match tag {
         0x02 => ObjectValue::Integer(decode_integer(bytes)?),
-        0x04 | 0x44 => ObjectValue::Bytes(bytes.to_vec()),
+        0x04 => ObjectValue::Bytes(bytes.to_vec()),
+        0x05 if bytes.is_empty() => ObjectValue::Null,
         0x06 => ObjectValue::ObjectId(ObjectId(decode_oid(bytes)?)),
         0x40 if bytes.len() == 4 => {
             ObjectValue::IpAddress(bytes.try_into().map_err(|_| SnmpError::Malformed)?)
         }
-        0x41..=0x43 | 0x46 => ObjectValue::Counter(decode_unsigned(bytes)?),
-        0x80 => ObjectValue::NoSuchObject,
-        0x81 => ObjectValue::NoSuchInstance,
-        0x82 => ObjectValue::EndOfMibView,
+        0x41 => ObjectValue::Counter32(
+            u32::try_from(decode_unsigned(bytes)?).map_err(|_| SnmpError::Malformed)?,
+        ),
+        0x42 => ObjectValue::Gauge32(
+            u32::try_from(decode_unsigned(bytes)?).map_err(|_| SnmpError::Malformed)?,
+        ),
+        0x43 => ObjectValue::TimeTicks(
+            u32::try_from(decode_unsigned(bytes)?).map_err(|_| SnmpError::Malformed)?,
+        ),
+        0x44 => ObjectValue::Opaque(bytes.to_vec()),
+        0x45 => ObjectValue::Nsap(bytes.to_vec()),
+        0x46 => ObjectValue::Counter64(decode_unsigned(bytes)?),
+        0x47 => ObjectValue::Unsigned32(
+            u32::try_from(decode_unsigned(bytes)?).map_err(|_| SnmpError::Malformed)?,
+        ),
+        0x80 if bytes.is_empty() => ObjectValue::NoSuchObject,
+        0x81 if bytes.is_empty() => ObjectValue::NoSuchInstance,
+        0x82 if bytes.is_empty() => ObjectValue::EndOfMibView,
+        // Known tags with invalid encodings are malformed, not unknown values.
+        0x05 | 0x40 | 0x80..=0x82 => {
+            return Err(SnmpError::Malformed);
+        }
         _ => ObjectValue::Unknown {
             tag,
             bytes: bytes.to_vec(),
