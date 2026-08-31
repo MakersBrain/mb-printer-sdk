@@ -377,6 +377,14 @@
       "minRows": 301,
       "maxRows": 35434,
       "builtin": true,
+      "operations": [
+        "print",
+        "status",
+        "system-report",
+        "wifi-status",
+        "wifi-scan",
+        "wifi-configure"
+      ],
       "id": "ql-1110nwb",
       "name": "Brother QL-1110NWB",
       "description": "4in DK label printer, 300dpi, USB / network / Bluetooth",
@@ -401,6 +409,14 @@
       "minRows": 301,
       "maxRows": 35434,
       "builtin": true,
+      "operations": [
+        "print",
+        "status",
+        "system-report",
+        "wifi-status",
+        "wifi-scan",
+        "wifi-configure"
+      ],
       "id": "ql-1115nwb",
       "name": "Brother QL-1115NWB",
       "description": "4in DK label printer, 300dpi",
@@ -424,6 +440,11 @@
       "minRows": 301,
       "maxRows": 35434,
       "builtin": true,
+      "operations": [
+        "print",
+        "status",
+        "system-report"
+      ],
       "id": "ql-1100",
       "name": "Brother QL-1100",
       "description": "4in DK label printer, 300dpi, USB",

@@ -11,6 +11,7 @@ use std::{
     fs::OpenOptions,
     io::Write,
     path::{Path, PathBuf},
+    time::Instant,
 };
 use thiserror::Error;
 
@@ -157,6 +158,19 @@ fn execute_with_timing_inner<T: Transport>(
         });
     }
     for (i, a) in plan.actions.iter().enumerate() {
+        if let Action::WaitForResponse { validation, .. } = a
+            && matches!(
+                validation,
+                ResponseValidation::BrotherObjbrnet
+                    | ResponseValidation::BrotherWifiScan
+                    | ResponseValidation::BrotherSystemReport
+            )
+        {
+            return Err(ExecuteError::InvalidPlan {
+                action: i,
+                message: "variable-length validator requires response collection",
+            });
+        }
         if let Action::CommandWrite {
             bytes,
             atomic: true,
@@ -177,6 +191,19 @@ fn execute_with_timing_inner<T: Transport>(
             return Err(ExecuteError::InvalidPlan {
                 action: i,
                 message: "zero logical raster chunk",
+            });
+        }
+        if let Action::CollectResponse {
+            timeout_ms,
+            idle_timeout_ms,
+            maximum_bytes,
+            ..
+        } = a
+            && (*timeout_ms == 0 || *idle_timeout_ms == 0 || *maximum_bytes == 0)
+        {
+            return Err(ExecuteError::InvalidPlan {
+                action: i,
+                message: "response collection bounds must be positive",
             });
         }
     }
@@ -254,6 +281,34 @@ fn execute_with_timing_inner<T: Transport>(
                     progress: p.clone(),
                 }),
                 Err(message) => Err(fail(&p, message)),
+            },
+            Action::CollectResponse {
+                timeout_ms,
+                idle_timeout_ms,
+                maximum_bytes,
+                validation,
+            } => match collect_multipart_response_observed(
+                t,
+                *timeout_ms,
+                *idle_timeout_ms,
+                *maximum_bytes,
+                i,
+            ) {
+                Ok(WaitOutcome::Response(bytes)) => {
+                    let outcome = validate(*validation, &bytes, &p);
+                    if outcome.is_ok() {
+                        p.responses.push(bytes)
+                    }
+                    outcome
+                }
+                Ok(WaitOutcome::Timeout | WaitOutcome::Unavailable) => Err(ExecuteError::Timeout {
+                    progress: p.clone(),
+                }),
+                Err(MultipartError::Transport(message)) => Err(fail(&p, message)),
+                Err(MultipartError::Response(message)) => Err(ExecuteError::Response {
+                    progress: p.clone(),
+                    message: message.into(),
+                }),
             },
         };
         result?;
@@ -377,6 +432,107 @@ fn collect_response_observed<T: Transport>(
     outcome
 }
 
+enum MultipartError {
+    Transport(String),
+    Response(&'static str),
+}
+
+const MAX_MULTIPART_READS: usize = 4096;
+
+fn collect_multipart_response_observed<T: Transport>(
+    t: &mut T,
+    timeout_ms: u64,
+    idle_timeout_ms: u64,
+    maximum_bytes: usize,
+    action_index: usize,
+) -> Result<WaitOutcome, MultipartError> {
+    let operation = transport_operation_span("collect-response", action_index);
+    let outcome = {
+        let _entered = operation.enter();
+        collect_multipart_response(t, timeout_ms, idle_timeout_ms, maximum_bytes)
+    };
+    operation.record(
+        "outcome",
+        match &outcome {
+            Ok(WaitOutcome::Response(_)) => "response",
+            Ok(WaitOutcome::Timeout) => "timeout",
+            Ok(WaitOutcome::Unavailable) => "unavailable",
+            Err(_) => "failed",
+        },
+    );
+    tracing::debug!(parent: &operation, "native transport operation finished");
+    outcome
+}
+
+/// Collect a variable-length response until the transport goes quiet, while
+/// bounding total time, retained bytes, and the number of backend calls.
+fn collect_multipart_response<T: Transport>(
+    t: &mut T,
+    timeout_ms: u64,
+    idle_timeout_ms: u64,
+    maximum_bytes: usize,
+) -> Result<WaitOutcome, MultipartError> {
+    let started = Instant::now();
+    let total = std::time::Duration::from_millis(timeout_ms);
+    let mut bytes = Vec::new();
+    let mut became_idle = false;
+
+    for read in 0..MAX_MULTIPART_READS {
+        let remaining = total.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            break;
+        }
+        let remaining_ms = u64::try_from(remaining.as_millis())
+            .unwrap_or(u64::MAX)
+            .max(1);
+        let wait_ms = if read == 0 {
+            remaining_ms
+        } else {
+            idle_timeout_ms.min(remaining_ms)
+        };
+        match t
+            .wait_response(wait_ms)
+            .map_err(MultipartError::Transport)?
+        {
+            WaitOutcome::Response(chunk) if chunk.is_empty() => {
+                became_idle = true;
+                break;
+            }
+            WaitOutcome::Response(chunk) => {
+                let new_length = bytes
+                    .len()
+                    .checked_add(chunk.len())
+                    .ok_or(MultipartError::Response("response size overflow"))?;
+                if new_length > maximum_bytes {
+                    return Err(MultipartError::Response(
+                        "response exceeded declared maximum",
+                    ));
+                }
+                bytes.extend_from_slice(&chunk);
+            }
+            outcome => {
+                return Ok(if bytes.is_empty() {
+                    outcome
+                } else {
+                    WaitOutcome::Response(bytes)
+                });
+            }
+        }
+    }
+
+    if bytes.is_empty() {
+        Ok(WaitOutcome::Timeout)
+    } else if !became_idle && started.elapsed() < total {
+        // Reaching the read ceiling while the transport is still producing
+        // packets is an invalid, non-idle response rather than success.
+        Err(MultipartError::Response(
+            "response did not become idle before the read limit",
+        ))
+    } else {
+        Ok(WaitOutcome::Response(bytes))
+    }
+}
+
 /// Bulk endpoints may split a reply across reads, so keep reading until the
 /// declared validator has enough bytes or the printer stops answering.
 fn collect_response<T: Transport>(
@@ -388,6 +544,9 @@ fn collect_response<T: Transport>(
         ResponseValidation::BrotherStatus32 => 32,
         ResponseValidation::AnyNotification => 1,
         ResponseValidation::PhomemoNotification => 3,
+        ResponseValidation::BrotherObjbrnet
+        | ResponseValidation::BrotherWifiScan
+        | ResponseValidation::BrotherSystemReport => usize::MAX,
     };
     let mut bytes: Vec<u8> = Vec::new();
     for _ in 0..16 {
@@ -528,11 +687,26 @@ fn validate(v: ResponseValidation, b: &[u8], p: &Progress) -> Result<(), Execute
         {
             Ok(())
         }
+        ResponseValidation::BrotherObjbrnet if contains(b, b"OBJBRNET") => Ok(()),
+        ResponseValidation::BrotherWifiScan
+            if contains(b, b"AVAILABLEWLAN") || contains(b, b"VAP,") =>
+        {
+            Ok(())
+        }
+        ResponseValidation::BrotherSystemReport if contains(b, b"<<PRINTER CONFIGURATION>>") => {
+            Ok(())
+        }
         _ => Err(ExecuteError::Response {
             progress: p.clone(),
             message: "response did not match declared validator".into(),
         }),
     }
+}
+
+fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack
+        .windows(needle.len())
+        .any(|window| window == needle)
 }
 
 #[cfg(test)]

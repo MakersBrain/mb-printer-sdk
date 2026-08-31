@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 use mb_printer_core::{
-    capabilities, document::*, importer, limits::ProcessingLimits, protocol, template,
+    capabilities::{self, PrinterOperation},
+    document::*,
+    importer,
+    limits::ProcessingLimits,
+    protocol, template,
 };
 use std::collections::BTreeMap;
 #[test]
@@ -9,6 +13,28 @@ fn printer_definitions_are_losslessly_loaded() {
     assert!(p.len() > 20);
     assert_eq!(capabilities::detect("M02 PRO-123").unwrap().id, "m02-pro");
     assert_eq!(capabilities::by_id("p12").unwrap().chunk_size(), 128)
+}
+
+#[test]
+fn printer_operations_default_to_print_and_are_explicit_for_brother_models() {
+    let legacy: capabilities::PrinterDefinition = serde_json::from_str(
+        r#"{"id":"legacy","name":"Legacy","protocol":"m02","widthBytes":null}"#,
+    )
+    .unwrap();
+    assert_eq!(legacy.operations, vec![PrinterOperation::Print]);
+    assert!(legacy.supports(PrinterOperation::Print));
+    assert!(!legacy.supports(PrinterOperation::Status));
+
+    for id in ["ql-1110nwb", "ql-1115nwb", "ql-1100"] {
+        let brother = capabilities::by_id(id).unwrap();
+        assert!(brother.supports(PrinterOperation::Print));
+        assert!(brother.supports(PrinterOperation::Status));
+        assert!(brother.supports(PrinterOperation::SystemReport));
+        let wireless = matches!(id, "ql-1110nwb" | "ql-1115nwb");
+        assert_eq!(brother.supports(PrinterOperation::WifiStatus), wireless);
+        assert_eq!(brother.supports(PrinterOperation::WifiScan), wireless);
+        assert_eq!(brother.supports(PrinterOperation::WifiConfigure), wireless);
+    }
 }
 #[test]
 fn template_is_deterministic_and_allowlisted() {

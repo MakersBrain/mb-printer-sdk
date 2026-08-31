@@ -1,0 +1,10 @@
+<<PRINTER CONFIGURATION>>
+[Printer]
+Printer =QL-1110NWB
+Serial No. =QL-SECRET
+ProgVer =V2.13
+[WLAN]
+SSID =private-net
+IP Address =192.0.2.7
+Gateway Address =192.0.2.1
+MAC Address =00:11:22:33:44:55

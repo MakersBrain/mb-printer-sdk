@@ -113,9 +113,10 @@ fn decode_svg(bytes: &[u8], max_pixels: u64) -> Result<GrayRaster, ResourceError
         tiny_skia::Transform::identity(),
         &mut pixmap.as_mut(),
     );
-    let pixels = pixmap
-        .data()
-        .chunks_exact(4)
+    let (rgba, remainder) = pixmap.data().as_chunks::<4>();
+    debug_assert!(remainder.is_empty());
+    let pixels = rgba
+        .iter()
         .map(|p| ((p[0] as u16 * 54 + p[1] as u16 * 183 + p[2] as u16 * 19 + 128) / 256) as u8)
         .collect();
     Ok(GrayRaster {
