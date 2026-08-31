@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+[package]
+name = "mb-printer-agent-proto"
+description = "Versioned protobuf/tonic contract for mb-printer agent sessions"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+include = ["/src/**", "/proto/**", "/tests/**", "/build.rs", "/Cargo.toml"]
+
+[dependencies]
+prost = "0.14.4"
+tonic = "0.14.6"
+tonic-prost = "0.14.6"
+thiserror.workspace = true
+
+[build-dependencies]
+prost-build = "0.14.4"
+protoc-bin-vendored = "3.2.0"
+tonic-prost-build = "0.14.6"

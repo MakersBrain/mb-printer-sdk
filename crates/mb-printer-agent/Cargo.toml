@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+[package]
+name = "mb-printer-agent"
+description = "Policy-enforcing native executor for the mb-printer agent session"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+include = ["/src/**", "/tests/**", "/Cargo.toml"]
+
+[dependencies]
+mb-printer-agent-proto = { version = "=0.1.0", path = "../mb-printer-agent-proto" }
+mb-printer-core = { version = "=0.1.0", path = "../mb-printer-core" }
+mb-printer-native = { version = "=0.1.0", path = "../mb-printer-native", features = ["ipp"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
+
+[dev-dependencies]
+prost = "0.14.4"

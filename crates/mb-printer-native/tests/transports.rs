@@ -6,7 +6,9 @@
     feature = "wifi",
     feature = "native-input"
 ))]
-use mb_printer_native::{Transport, WaitOutcome, transports::*};
+use mb_printer_native::transports::*;
+#[cfg(any(feature = "usb", feature = "ble"))]
+use mb_printer_native::{Transport, WaitOutcome};
 
 #[cfg(feature = "serial")]
 #[test]

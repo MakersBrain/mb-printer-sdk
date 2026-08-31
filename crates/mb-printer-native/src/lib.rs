@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #![deny(unsafe_op_in_unsafe_fn)]
 pub mod transports;
+#[cfg(any(feature = "ble", feature = "ipp", feature = "snmp"))]
+pub mod workers;
 use mb_printer_core::{
     capabilities::Protocol,
     protocol::{Action, Plan, ResponseValidation},

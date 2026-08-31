@@ -34,4 +34,5 @@ hayro = { version = "=0.7.1", default-features = false, features = ["embed-cmaps
 lzokay-native = { version = "0.1.0", default-features = false, features = ["compress"] }
 
 [dev-dependencies]
+ipp = { version = "7.0.0", default-features = false }
 jsonschema = { version = "0.33", default-features = false }
