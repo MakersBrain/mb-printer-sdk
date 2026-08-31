@@ -6,6 +6,10 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+pub mod brother;
+
+pub use brother::status::{BrotherStatus, parse_status as brother_parse_status};
+
 pub const SOURCE_COMMIT: &str = "1f58d3f0e7f941b9143277cda828380149e56855";
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "action", rename_all = "kebab-case", deny_unknown_fields)]
@@ -32,6 +36,12 @@ pub enum Action {
         fallback_delay_ms: u64,
         validation: ResponseValidation,
     },
+    CollectResponse {
+        timeout_ms: u64,
+        idle_timeout_ms: u64,
+        maximum_bytes: usize,
+        validation: ResponseValidation,
+    },
 }
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -45,6 +55,9 @@ pub enum ResponseValidation {
     AnyNotification,
     PhomemoNotification,
     BrotherStatus32,
+    BrotherObjbrnet,
+    BrotherWifiScan,
+    BrotherSystemReport,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Plan {
@@ -134,24 +147,7 @@ pub enum PlanError {
 pub fn status_plan(printer: &PrinterDefinition) -> Result<Plan, PlanError> {
     let mut a = Vec::new();
     match printer.protocol {
-        Protocol::Brother => {
-            cmd(
-                &mut a,
-                "invalidate",
-                vec![0; printer.invalidate_bytes as usize],
-            );
-            cmd(&mut a, "ESC @ init", vec![0x1b, 0x40]);
-            cmd(&mut a, "switch to raster mode", vec![0x1b, 0x69, 0x61, 1]);
-            // The printer discards a status request that arrives while it is
-            // still consuming the invalidate/init preamble.
-            delay(&mut a, 100);
-            cmd(&mut a, "ESC i S status request", vec![0x1b, 0x69, 0x53]);
-            a.push(Action::WaitForResponse {
-                timeout_ms: 3000,
-                fallback_delay_ms: 0,
-                validation: ResponseValidation::BrotherStatus32,
-            });
-        }
+        Protocol::Brother => return Ok(brother::status::plan(printer)),
         // Phomemo families answer 1f 11 <code> on the notification channel.
         Protocol::MSeries
         | Protocol::M02
@@ -735,73 +731,6 @@ fn ascii(bytes: &[u8]) -> String {
         .filter(|byte| byte.is_ascii_graphic())
         .map(|byte| *byte as char)
         .collect()
-}
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BrotherStatus {
-    pub media_width_mm: u8,
-    pub media_length_mm: u8,
-    pub media_type: &'static str,
-    pub status_type: &'static str,
-    pub phase: &'static str,
-    pub errors: Vec<&'static str>,
-}
-pub fn brother_parse_status(data: &[u8]) -> Result<BrotherStatus, &'static str> {
-    if data.len() != 32 {
-        return Err("Brother status must be exactly 32 bytes");
-    }
-    if !data.starts_with(&[0x80, 0x20, 0x42]) {
-        return Err("unexpected Brother status header");
-    }
-    let mut errors = Vec::new();
-    for (bit, name) in [
-        (0, "no media"),
-        (1, "end of media"),
-        (2, "cutter jam"),
-        (4, "unit in use"),
-        (5, "printer off"),
-        (7, "fan failure"),
-    ] {
-        if data[8] & (1 << bit) != 0 {
-            errors.push(name)
-        }
-    }
-    for (bit, name) in [
-        (0, "replace media"),
-        (1, "expansion buffer full"),
-        (2, "transmission error"),
-        (4, "cover opened while printing"),
-        (6, "media cannot be fed"),
-        (7, "system error"),
-    ] {
-        if data[9] & (1 << bit) != 0 {
-            errors.push(name)
-        }
-    }
-    Ok(BrotherStatus {
-        media_width_mm: data[10],
-        media_length_mm: data[17],
-        media_type: match data[11] {
-            0 => "no media",
-            0x0a => "continuous",
-            0x0b => "die-cut",
-            _ => "unknown",
-        },
-        status_type: match data[18] {
-            0 => "reply to status request",
-            1 => "printing completed",
-            2 => "error",
-            5 => "notification",
-            6 => "phase change",
-            _ => "unknown",
-        },
-        phase: match data[19] {
-            0 => "waiting to receive",
-            1 => "printing",
-            _ => "unknown",
-        },
-        errors,
-    })
 }
 fn cmd(a: &mut Vec<Action>, name: &str, bytes: Vec<u8>) {
     a.push(Action::CommandWrite {

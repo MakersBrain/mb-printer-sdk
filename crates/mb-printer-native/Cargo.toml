@@ -22,6 +22,7 @@ usb = ["dep:rusb"]
 ble = ["dep:btleplug", "dep:futures-util", "dep:tokio", "dep:uuid"]
 ble-vendored-dbus = ["ble", "dep:dbus"]
 wifi = []
+dns-sd = ["wifi", "dep:mdns-sd"]
 native-input = []
 [dependencies]
 mb-printer-core = { version = "=0.1.0", path = "../mb-printer-core" }
@@ -36,6 +37,7 @@ futures-util = { version = "0.3", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "time", "sync"], optional = true }
 uuid = { version = "1", optional = true }
 libc = { version = "0.2", optional = true }
+mdns-sd = { version = "0.21", optional = true }
 [dev-dependencies]
 serde.workspace = true
 serde_json.workspace = true

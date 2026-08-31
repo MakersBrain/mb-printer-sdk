@@ -40,12 +40,40 @@ pub struct PrinterDefinition {
     pub min_rows: u32,
     #[serde(default)]
     pub max_rows: u32,
+    /// Operations this model is allowed to expose.
+    ///
+    /// Printer definitions authored before operation capabilities were added
+    /// remain print-only.  This keeps the bundled catalogue backwards
+    /// compatible while making non-print operations explicit per model.
+    #[serde(default = "default_operations")]
+    pub operations: Vec<PrinterOperation>,
 }
 fn dpi() -> u16 {
     203
 }
 fn invalidate() -> u16 {
     200
+}
+
+fn default_operations() -> Vec<PrinterOperation> {
+    vec![PrinterOperation::Print]
+}
+
+/// A user-visible operation supported by a printer model.
+///
+/// This is deliberately a small allowlist rather than a driver hierarchy:
+/// protocol modules still own command construction and response parsing.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "kebab-case")]
+pub enum PrinterOperation {
+    Print,
+    Status,
+    SystemReport,
+    WifiStatus,
+    WifiScan,
+    WifiConfigure,
+    IppStatus,
+    DnsSdDiscovery,
 }
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -96,6 +124,11 @@ pub fn detect(name: &str) -> Option<PrinterDefinition> {
         .map(|x| x.1)
 }
 impl PrinterDefinition {
+    /// Returns whether this model explicitly supports an operation.
+    pub fn supports(&self, operation: PrinterOperation) -> bool {
+        self.operations.contains(&operation)
+    }
+
     pub fn width_px(&self) -> Option<u32> {
         self.width_bytes.map(|x| x as u32 * 8)
     }

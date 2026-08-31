@@ -318,10 +318,100 @@ pub mod serial {
 pub mod usb {
     use super::*;
     use rusb::UsbContext as _;
+    use std::collections::BTreeMap;
+
+    pub const MAX_IEEE1284_DEVICE_ID_BYTES: usize = 2048;
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct Ieee1284DeviceId {
+        pub raw: String,
+        pub manufacturer: Option<String>,
+        pub model: Option<String>,
+        pub command_sets: Vec<String>,
+        pub fields: BTreeMap<String, String>,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct UsbPortStatus {
+        pub selected: bool,
+        pub paper_empty: bool,
+        pub error: bool,
+    }
+
+    pub fn parse_ieee1284_device_id(data: &[u8]) -> Result<Ieee1284DeviceId, String> {
+        if data.len() < 2 {
+            return Err("short IEEE-1284 device ID".into());
+        }
+        if data.len() > MAX_IEEE1284_DEVICE_ID_BYTES {
+            return Err("IEEE-1284 device ID exceeds limit".into());
+        }
+        let declared = usize::from(u16::from_be_bytes([data[0], data[1]]));
+        if declared < 2 || declared > data.len() || declared > MAX_IEEE1284_DEVICE_ID_BYTES {
+            return Err("invalid IEEE-1284 device ID length".into());
+        }
+        let raw = std::str::from_utf8(&data[2..declared])
+            .map_err(|_| "IEEE-1284 device ID is not UTF-8")?
+            .trim_matches(char::from(0))
+            .trim()
+            .to_owned();
+        if raw.is_empty() || !raw.contains(';') {
+            return Err("malformed IEEE-1284 device ID".into());
+        }
+        let fields = raw
+            .split(';')
+            .filter_map(|field| {
+                let (key, value) = field.split_once(':')?;
+                let key = key.trim().to_ascii_uppercase();
+                let value = value.trim().to_owned();
+                (!key.is_empty() && !value.is_empty()).then_some((key, value))
+            })
+            .collect::<BTreeMap<_, _>>();
+        if fields.is_empty() {
+            return Err("malformed IEEE-1284 device ID fields".into());
+        }
+        let field =
+            |short: &str, long: &str| fields.get(short).or_else(|| fields.get(long)).cloned();
+        let manufacturer = field("MFG", "MANUFACTURER");
+        let model = field("MDL", "MODEL");
+        let command_sets = field("CMD", "COMMAND SET")
+            .map(|value| {
+                value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok(Ieee1284DeviceId {
+            raw,
+            manufacturer,
+            model,
+            command_sets,
+            fields,
+        })
+    }
+
+    pub const fn parse_port_status(value: u8) -> UsbPortStatus {
+        UsbPortStatus {
+            selected: value & 0x10 != 0,
+            paper_empty: value & 0x20 != 0,
+            error: value & 0x08 == 0,
+        }
+    }
+
     pub trait UsbBulkBackend {
         fn write_bulk(&mut self, bytes: &[u8]) -> Result<(), String>;
         fn read_bulk(&mut self, timeout_ms: u64, maximum: usize)
         -> Result<Option<Vec<u8>>, String>;
+    }
+    pub trait UsbPrinterClassBackend {
+        fn get_device_id_raw(
+            &mut self,
+            timeout_ms: u64,
+            maximum: usize,
+        ) -> Result<Option<Vec<u8>>, String>;
+        fn get_port_status_raw(&mut self, timeout_ms: u64) -> Result<Option<u8>, String>;
     }
     pub trait UsbDiscoveryBackend {
         fn discover_usb(&self) -> Result<Vec<DiscoveredPrinter>, String>;
@@ -356,6 +446,32 @@ pub mod usb {
         }
         pub fn backend(&self) -> &B {
             &self.backend
+        }
+    }
+    impl<B: UsbPrinterClassBackend> UsbTransport<B> {
+        pub fn get_device_id(
+            &mut self,
+            timeout_ms: u64,
+        ) -> Result<Option<Ieee1284DeviceId>, String> {
+            if timeout_ms == 0 {
+                return Err("USB Printer Class timeout must be positive".into());
+            }
+            self.backend
+                .get_device_id_raw(timeout_ms, MAX_IEEE1284_DEVICE_ID_BYTES)?
+                .map(|data| parse_ieee1284_device_id(&data))
+                .transpose()
+        }
+
+        pub fn get_port_status(
+            &mut self,
+            timeout_ms: u64,
+        ) -> Result<Option<UsbPortStatus>, String> {
+            if timeout_ms == 0 {
+                return Err("USB Printer Class timeout must be positive".into());
+            }
+            self.backend
+                .get_port_status_raw(timeout_ms)
+                .map(|value| value.map(parse_port_status))
         }
     }
     impl<B: UsbBulkBackend> Transport for UsbTransport<B> {
@@ -515,6 +631,8 @@ pub mod usb {
     }
     pub struct RusbBulkBackend {
         handle: rusb::DeviceHandle<rusb::Context>,
+        interface: u8,
+        alternate_setting: u8,
         out_endpoint: u8,
         in_endpoint: Option<u8>,
         timeout: Duration,
@@ -544,6 +662,26 @@ pub mod usb {
             in_endpoint: Option<u8>,
             timeout_ms: u64,
         ) -> Result<Self, String> {
+            Self::open_with_setting_and_serial(
+                identity,
+                interface,
+                alternate_setting,
+                out_endpoint,
+                in_endpoint,
+                timeout_ms,
+                None,
+            )
+        }
+
+        pub fn open_with_setting_and_serial(
+            identity: UsbIdentity,
+            interface: u8,
+            alternate_setting: u8,
+            out_endpoint: u8,
+            in_endpoint: Option<u8>,
+            timeout_ms: u64,
+            expected_serial: Option<&str>,
+        ) -> Result<Self, String> {
             let context = rusb::Context::new()
                 .map_err(|error| format!("USB context initialization failed: {error}"))?;
             let devices = context.devices().map_err(|error| error.to_string())?;
@@ -562,6 +700,15 @@ pub mod usb {
                 return Err("USB identity changed before open".into());
             }
             let handle = device.open().map_err(|error| error.to_string())?;
+            if let Some(expected_serial) = expected_serial {
+                if expected_serial.is_empty() {
+                    return Err("expected USB serial must not be empty".into());
+                }
+                let actual_serial = handle
+                    .read_serial_number_string_ascii(&descriptor)
+                    .map_err(|error| format!("USB serial revalidation failed: {error}"))?;
+                verify_expected_serial(expected_serial, &actual_serial)?;
+            }
             let _ = handle.set_auto_detach_kernel_driver(true);
             handle
                 .claim_interface(interface)
@@ -573,6 +720,8 @@ pub mod usb {
             }
             Ok(Self {
                 handle,
+                interface,
+                alternate_setting,
                 out_endpoint,
                 in_endpoint,
                 timeout: Duration::from_millis(timeout_ms),
@@ -611,6 +760,57 @@ pub mod usb {
                 Err(rusb::Error::Timeout) => Ok(None),
                 Err(error) => Err(error.to_string()),
             }
+        }
+    }
+    impl UsbPrinterClassBackend for RusbBulkBackend {
+        fn get_device_id_raw(
+            &mut self,
+            timeout_ms: u64,
+            maximum: usize,
+        ) -> Result<Option<Vec<u8>>, String> {
+            let mut bytes = vec![0; maximum.clamp(2, MAX_IEEE1284_DEVICE_ID_BYTES)];
+            let index = (u16::from(self.interface) << 8) | u16::from(self.alternate_setting);
+            match self.handle.read_control(
+                0xa1,
+                0,
+                0,
+                index,
+                &mut bytes,
+                Duration::from_millis(timeout_ms),
+            ) {
+                Ok(0) => Ok(None),
+                Ok(length) => {
+                    bytes.truncate(length);
+                    Ok(Some(bytes))
+                }
+                Err(rusb::Error::Timeout) => Ok(None),
+                Err(error) => Err(error.to_string()),
+            }
+        }
+
+        fn get_port_status_raw(&mut self, timeout_ms: u64) -> Result<Option<u8>, String> {
+            let mut value = [0];
+            match self.handle.read_control(
+                0xa1,
+                1,
+                0,
+                u16::from(self.interface),
+                &mut value,
+                Duration::from_millis(timeout_ms),
+            ) {
+                Ok(0) => Ok(None),
+                Ok(_) => Ok(Some(value[0])),
+                Err(rusb::Error::Timeout) => Ok(None),
+                Err(error) => Err(error.to_string()),
+            }
+        }
+    }
+
+    pub fn verify_expected_serial(expected: &str, actual: &str) -> Result<(), String> {
+        if expected == actual {
+            Ok(())
+        } else {
+            Err("USB serial changed before open".into())
         }
     }
     pub type RusbTransport = UsbTransport<RusbBulkBackend>;
@@ -652,6 +852,39 @@ pub mod usb {
             response_limit,
         ))
     }
+    /// Open a previously selected device for a mutable operation and re-read
+    /// its serial number before claiming the interface.
+    pub fn open_rusb_with_limits_verified(
+        candidate: &UsbBulkCandidate,
+        expected_serial: &str,
+        raster_limit: usize,
+        command_limit: usize,
+        response_limit: usize,
+        timeout_ms: u64,
+    ) -> Result<RusbTransport, String> {
+        if expected_serial.is_empty() {
+            return Err("expected USB serial must not be empty".into());
+        }
+        if candidate.serial_number.as_deref() != Some(expected_serial) {
+            return Err("selected USB candidate does not match expected serial".into());
+        }
+        Ok(UsbTransport::new_with_limits(
+            RusbBulkBackend::open_with_setting_and_serial(
+                candidate.identity,
+                candidate.interface,
+                candidate.alternate_setting,
+                candidate.out_endpoint,
+                candidate.in_endpoint,
+                timeout_ms,
+                Some(expected_serial),
+            )?,
+            raster_limit
+                .min(usize::from(candidate.max_packet_size))
+                .max(1),
+            command_limit,
+            response_limit,
+        ))
+    }
     pub fn open_rusb_auto(
         identity: UsbIdentity,
         command_limit: usize,
@@ -670,6 +903,9 @@ pub mod usb {
         )
     }
 }
+
+#[cfg(feature = "dns-sd")]
+pub mod dns_sd;
 
 #[cfg(feature = "ble")]
 pub mod ble {
@@ -1151,18 +1387,20 @@ pub mod ble {
 #[cfg(feature = "wifi")]
 pub mod wifi {
     use crate::Transport;
+    use mb_printer_core::protocol::brother::wifi::{
+        self as core_wifi, WirelessSettings as TypedWirelessSettings,
+    };
+    pub use mb_printer_core::protocol::brother::wifi::{
+        AccessPoint, PJL_FOOTER, PJL_HEADER, REBOOT_COMMAND, WirelessAuthentication,
+        WirelessEncryption, WirelessField, encode_ssid, ip_address_command, parse_access_points,
+        parse_authentication, parse_boolean_field, parse_encryption, parse_ip_address,
+        parse_oid_value, parse_wifi_status, wifi_scan_result_command, wifi_scan_start_command,
+        wifi_status_command, wireless_scan_plan, wireless_status_plan, xor_password,
+    };
     use std::io::{Read, Write};
     use std::net::{TcpStream, ToSocketAddrs};
     use std::time::Duration;
-    pub const PJL_HEADER: &[u8] = b"\x1b%-12345X@PJL\r\n";
-    pub const PJL_FOOTER: &[u8] = b"\x1b%-12345X";
-    pub const REBOOT_COMMAND: &[u8] = &[
-        0x1b, 0x69, 0x58, 0x2a, 0x31, 0x03, 0, 0x01, 0x2e, 0, 0, 0, 0x2c, 0,
-    ];
-    const PASSWORD_KEY: [u8; 16] = [
-        0x0d, 0xae, 0xe4, 0xa1, 0x8b, 0x7f, 0x26, 0x5e, 0x72, 0x5b, 0x17, 0x7a, 0x71, 0xcd, 0xec,
-        0x4d,
-    ];
+    use thiserror::Error;
     pub struct WifiCredentials {
         pub ssid: String,
         pub password: String,
@@ -1179,11 +1417,44 @@ pub mod wifi {
     pub trait WifiProvisioner {
         fn provision(&mut self, credentials: &WifiCredentials) -> Result<(), String>;
     }
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    pub enum IppScheme {
+        #[default]
+        Ipp,
+        Ipps,
+    }
+    impl IppScheme {
+        pub const fn as_str(self) -> &'static str {
+            match self {
+                Self::Ipp => "ipp",
+                Self::Ipps => "ipps",
+            }
+        }
+    }
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct IppEndpoint {
+        pub scheme: IppScheme,
         pub host: String,
         pub port: u16,
         pub resource: String,
+    }
+    impl IppEndpoint {
+        pub fn ipp(host: impl Into<String>, port: u16, resource: impl Into<String>) -> Self {
+            Self {
+                scheme: IppScheme::Ipp,
+                host: host.into(),
+                port,
+                resource: resource.into(),
+            }
+        }
+        pub fn ipps(host: impl Into<String>, port: u16, resource: impl Into<String>) -> Self {
+            Self {
+                scheme: IppScheme::Ipps,
+                host: host.into(),
+                port,
+                resource: resource.into(),
+            }
+        }
     }
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct IppPrinterStatus {
@@ -1191,12 +1462,23 @@ pub mod wifi {
         pub reasons: Vec<String>,
         pub media_ready: Vec<String>,
     }
+    #[derive(Debug, Error, Clone, PartialEq, Eq)]
+    pub enum IppProbeError {
+        #[error("invalid IPP endpoint")]
+        InvalidEndpoint,
+        #[error("IPPS endpoint requires a secure transport that is not available")]
+        SecureTransportUnavailable,
+        #[error("IPP transport failed: {0}")]
+        Transport(String),
+        #[error("invalid IPP response: {0}")]
+        InvalidResponse(String),
+    }
     pub trait IppStatusBackend {
         fn query_ipp_status(
             &self,
             endpoint: &IppEndpoint,
             timeout_ms: u64,
-        ) -> Result<IppPrinterStatus, String>;
+        ) -> Result<IppPrinterStatus, IppProbeError>;
     }
     #[derive(Debug, Default, Clone, Copy)]
     pub struct TcpIppBackend;
@@ -1205,7 +1487,7 @@ pub mod wifi {
             &self,
             endpoint: &IppEndpoint,
             timeout_ms: u64,
-        ) -> Result<IppPrinterStatus, String> {
+        ) -> Result<IppPrinterStatus, IppProbeError> {
             query_ipp_status(endpoint, timeout_ms)
         }
     }
@@ -1222,27 +1504,39 @@ pub mod wifi {
             })
             .collect()
     }
+    pub fn probe_ipp_endpoints(
+        endpoints: &[IppEndpoint],
+        timeout_ms: u64,
+    ) -> Vec<(IppEndpoint, Result<IppPrinterStatus, IppProbeError>)> {
+        endpoints
+            .iter()
+            .map(|endpoint| (endpoint.clone(), query_ipp_status(endpoint, timeout_ms)))
+            .collect()
+    }
     pub fn query_ipp_status(
         endpoint: &IppEndpoint,
         timeout_ms: u64,
-    ) -> Result<IppPrinterStatus, String> {
+    ) -> Result<IppPrinterStatus, IppProbeError> {
         if endpoint.host.is_empty() || !endpoint.resource.starts_with('/') || timeout_ms == 0 {
-            return Err("invalid IPP endpoint".into());
+            return Err(IppProbeError::InvalidEndpoint);
+        }
+        if endpoint.scheme == IppScheme::Ipps {
+            return Err(IppProbeError::SecureTransportUnavailable);
         }
         let address = (endpoint.host.as_str(), endpoint.port)
             .to_socket_addrs()
-            .map_err(|error| error.to_string())?
+            .map_err(|error| IppProbeError::Transport(error.to_string()))?
             .next()
-            .ok_or_else(|| "IPP endpoint did not resolve".to_owned())?;
+            .ok_or_else(|| IppProbeError::Transport("IPP endpoint did not resolve".into()))?;
         let timeout = Duration::from_millis(timeout_ms);
-        let mut stream =
-            TcpStream::connect_timeout(&address, timeout).map_err(|e| e.to_string())?;
+        let mut stream = TcpStream::connect_timeout(&address, timeout)
+            .map_err(|error| IppProbeError::Transport(error.to_string()))?;
         stream
             .set_read_timeout(Some(timeout))
-            .map_err(|e| e.to_string())?;
+            .map_err(|error| IppProbeError::Transport(error.to_string()))?;
         stream
             .set_write_timeout(Some(timeout))
-            .map_err(|e| e.to_string())?;
+            .map_err(|error| IppProbeError::Transport(error.to_string()))?;
         let body = ipp_status_request(endpoint);
         let header = format!(
             "POST {} HTTP/1.1\r\nHost: {}:{}\r\nContent-Type: application/ipp\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -1253,26 +1547,29 @@ pub mod wifi {
         );
         stream
             .write_all(header.as_bytes())
-            .map_err(|e| e.to_string())?;
-        stream.write_all(&body).map_err(|e| e.to_string())?;
+            .map_err(|error| IppProbeError::Transport(error.to_string()))?;
+        stream
+            .write_all(&body)
+            .map_err(|error| IppProbeError::Transport(error.to_string()))?;
         let mut response = Vec::new();
         stream
             .take(4 * 1024 * 1024)
             .read_to_end(&mut response)
-            .map_err(|e| e.to_string())?;
+            .map_err(|error| IppProbeError::Transport(error.to_string()))?;
         let split = response
             .windows(4)
             .position(|window| window == b"\r\n\r\n")
-            .ok_or_else(|| "invalid IPP HTTP response".to_owned())?;
-        let headers = std::str::from_utf8(&response[..split]).map_err(|e| e.to_string())?;
+            .ok_or_else(|| IppProbeError::InvalidResponse("missing HTTP headers".into()))?;
+        let headers = std::str::from_utf8(&response[..split])
+            .map_err(|_| IppProbeError::InvalidResponse("HTTP headers are not UTF-8".into()))?;
         if !headers
             .lines()
             .next()
             .is_some_and(|line| line.contains(" 200 "))
         {
-            return Err("IPP HTTP request failed".into());
+            return Err(IppProbeError::InvalidResponse("HTTP request failed".into()));
         }
-        parse_ipp_status(&response[split + 4..])
+        parse_ipp_status(&response[split + 4..]).map_err(IppProbeError::InvalidResponse)
     }
     fn ipp_attribute(output: &mut Vec<u8>, tag: u8, name: &str, value: &[u8]) {
         output.push(tag);
@@ -1339,7 +1636,7 @@ pub mod wifi {
             }
             if name_length > 0 {
                 previous_name = String::from_utf8(body[offset..offset + name_length].to_vec())
-                    .map_err(|error| error.to_string())?;
+                    .map_err(|_| "IPP attribute name is not UTF-8".to_owned())?;
             }
             offset += name_length;
             let value_length = usize::from(u16::from_be_bytes([body[offset], body[offset + 1]]));
@@ -1364,14 +1661,8 @@ pub mod wifi {
         }
         Err("IPP response has no end marker".into())
     }
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    pub struct AccessPoint {
-        pub ssid: String,
-        pub channel: u8,
-        pub power: i16,
-        pub enterprise: bool,
-        pub encrypted: bool,
-    }
+    /// String-valued compatibility adapter for the original native API.
+    /// New callers should construct the typed core `WirelessSettings` directly.
     #[derive(Clone)]
     pub struct WirelessSettings {
         pub ssid: String,
@@ -1394,186 +1685,23 @@ pub mod wifi {
     }
     impl WirelessSettings {
         pub fn command(&self) -> Result<Vec<u8>, String> {
-            if self.ssid.is_empty() {
-                return Err("SSID must not be empty".into());
+            TypedWirelessSettings {
+                ssid: self.ssid.clone(),
+                password: self.password.clone(),
+                encryption: WirelessEncryption::try_from(self.encryption.as_str())
+                    .map_err(|error| error.to_string())?,
+                authentication: WirelessAuthentication::try_from(self.authentication.as_str())
+                    .map_err(|error| error.to_string())?,
+                infrastructure: self.infrastructure,
+                wireless_direct: self.wireless_direct,
+                reboot: self.reboot,
             }
-            let encryption = match self.encryption.as_str() {
-                "none" => 1,
-                "wep" => 2,
-                "tkip" => 3,
-                "aes" => 4,
-                "ckip" => 5,
-                "cmic" => 6,
-                "ckip-cmic" => 7,
-                "tkip-aes" => 8,
-                _ => return Err("unknown encryption".into()),
-            };
-            let authentication = match self.authentication.as_str() {
-                "open" => 1,
-                "shared-key" => 2,
-                "wpa-psk" => 3,
-                "leap" => 7,
-                "eap-fast" => 13,
-                "peap" => 15,
-                "eap-ttls" => 16,
-                "eap-tls" => 17,
-                "wpa-only" => 18,
-                "wpa2-only" => 19,
-                _ => return Err("unknown authentication".into()),
-            };
-            if authentication != 1 && self.password.is_empty() {
-                return Err("authentication needs a password".into());
-            }
-            if authentication == 1 && encryption != 1 {
-                return Err("open authentication requires no encryption".into());
-            }
-            let mut parameters = vec![
-                ("458867", b"0".to_vec()),
-                ("458878", b"1".to_vec()),
-                ("458877", encode_ssid(&self.ssid)),
-            ];
-            if [3, 18, 19].contains(&authentication) {
-                parameters.push(("99458890", xor_password(self.password.as_bytes())))
-            } else if encryption == 2 {
-                parameters.push(("99458889.1", xor_password(self.password.as_bytes())))
-            }
-            parameters.extend([
-                ("458880", encryption.to_string().into_bytes()),
-                ("458881", authentication.to_string().into_bytes()),
-                (
-                    "459138.2",
-                    u8::from(self.infrastructure).to_string().into_bytes(),
-                ),
-                (
-                    "459138.3",
-                    u8::from(self.wireless_direct).to_string().into_bytes(),
-                ),
-                ("458865", b"1".to_vec()),
-            ]);
-            let mut output = PJL_HEADER.to_vec();
-            for (oid, value) in parameters {
-                output.extend(b"@PJL DEFAULT OBJBRNET=\"");
-                output.extend(oid.as_bytes());
-                output.push(b':');
-                output.extend(value);
-                output.extend(b"\"\r\n")
-            }
-            output.extend(PJL_FOOTER);
-            if self.reboot {
-                output.extend(REBOOT_COMMAND)
-            }
-            Ok(output)
+            .command()
+            .map_err(|error| error.to_string())
         }
-    }
-    pub fn xor_password(value: &[u8]) -> Vec<u8> {
-        value
-            .iter()
-            .enumerate()
-            .map(|(index, byte)| byte ^ PASSWORD_KEY[index % PASSWORD_KEY.len()])
-            .collect()
-    }
-    pub fn encode_ssid(value: &str) -> Vec<u8> {
-        value
-            .as_bytes()
-            .iter()
-            .flat_map(|byte| format!("-{byte:x}").into_bytes())
-            .collect()
     }
     pub fn inquire_command(oid: &str) -> Result<Vec<u8>, String> {
-        if oid.is_empty()
-            || !oid
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || byte == b'.')
-        {
-            return Err("invalid OBJBRNET OID".into());
-        }
-        let mut out = PJL_HEADER.to_vec();
-        out.extend(b"@PJL DEFAULT OBJBRNET=\"");
-        out.extend(oid.as_bytes());
-        out.extend(b"\"\r\n@PJL INQUIRE OBJBRNET\r\n");
-        out.extend(PJL_FOOTER);
-        Ok(out)
-    }
-    pub fn wifi_status_command() -> Vec<u8> {
-        inquire_command("458867").expect("constant OID")
-    }
-    pub fn ip_address_command() -> Vec<u8> {
-        inquire_command("458967.2").expect("constant OID")
-    }
-    pub fn parse_wifi_status(data: &[u8]) -> Option<bool> {
-        let text = String::from_utf8_lossy(data);
-        let offset = text.find("458867")?;
-        let value = text[offset + 6..]
-            .trim_start_matches(|character: char| {
-                character.is_whitespace() || character == ':' || character == '\"'
-            })
-            .chars()
-            .next()?;
-        match value {
-            '0' => Some(false),
-            '1' => Some(true),
-            _ => None,
-        }
-    }
-    pub fn parse_ip_address(data: &[u8]) -> Option<String> {
-        let text = String::from_utf8_lossy(data);
-        let offset = text.find("458967.2")?;
-        let value = text[offset + 8..]
-            .trim_start_matches(|character: char| {
-                character.is_whitespace()
-                    || character == ':'
-                    || character == '\"'
-                    || character == '-'
-            })
-            .split(['\"', '\r', '\n'])
-            .next()?;
-        let octets = value
-            .split('-')
-            .map(|part| u8::from_str_radix(part, 16).ok())
-            .collect::<Option<Vec<_>>>()?;
-        (octets.len() == 4).then(|| {
-            octets
-                .iter()
-                .map(u8::to_string)
-                .collect::<Vec<_>>()
-                .join(".")
-        })
-    }
-    pub fn parse_access_points(data: &[u8]) -> Vec<AccessPoint> {
-        String::from_utf8_lossy(data)
-            .replace('\0', "")
-            .lines()
-            .filter_map(|line| {
-                let fields = line
-                    .split(',')
-                    .map(|field| field.trim().trim_matches('"'))
-                    .collect::<Vec<_>>();
-                if fields.len() < 8 || fields[0] != "VAP" {
-                    return None;
-                }
-                Some(AccessPoint {
-                    ssid: decode_ssid(fields[1]),
-                    channel: fields[4].parse().ok()?,
-                    power: fields[5].parse().ok()?,
-                    enterprise: fields[6] == "3",
-                    encrypted: fields[7] == "2",
-                })
-            })
-            .collect()
-    }
-    fn decode_ssid(value: &str) -> String {
-        let parts = value.trim_matches('-').split('-').collect::<Vec<_>>();
-        if parts.len() < 2 {
-            return value.into();
-        }
-        let Some(bytes) = parts
-            .iter()
-            .map(|part| u8::from_str_radix(part, 16).ok())
-            .collect::<Option<Vec<_>>>()
-        else {
-            return value.into();
-        };
-        String::from_utf8(bytes).unwrap_or_else(|_| value.into())
+        core_wifi::inquire_command(oid).map_err(|error| error.to_string())
     }
     pub struct BrotherWifiProvisioner<T> {
         pub transport: T,

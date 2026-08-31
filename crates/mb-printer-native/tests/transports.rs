@@ -114,6 +114,117 @@ fn usb_candidate_selection_is_injectable_and_deterministic() {
     );
 }
 
+#[cfg(feature = "usb")]
+#[test]
+fn usb_printer_class_device_id_is_bounded_and_typed() {
+    let payload = b"MFG:Brother;MDL:QL-1110NWB;CMD:PJL,RASTER;CLS:PRINTER;";
+    let mut bytes = u16::try_from(payload.len() + 2)
+        .unwrap()
+        .to_be_bytes()
+        .to_vec();
+    bytes.extend_from_slice(payload);
+    let parsed = usb::parse_ieee1284_device_id(&bytes).unwrap();
+    assert_eq!(parsed.manufacturer.as_deref(), Some("Brother"));
+    assert_eq!(parsed.model.as_deref(), Some("QL-1110NWB"));
+    assert_eq!(parsed.command_sets, ["PJL", "RASTER"]);
+    assert_eq!(parsed.fields["CLS"], "PRINTER");
+    assert_eq!(parsed.raw, String::from_utf8(payload.to_vec()).unwrap());
+
+    for malformed in [
+        vec![],
+        vec![0],
+        vec![0, 1],
+        vec![0, 10, b'M'],
+        vec![0, 4, 0xff, b';'],
+        vec![0, 4, b'x', b';'],
+    ] {
+        assert!(usb::parse_ieee1284_device_id(&malformed).is_err());
+    }
+    let oversized = vec![0; usb::MAX_IEEE1284_DEVICE_ID_BYTES + 1];
+    assert!(usb::parse_ieee1284_device_id(&oversized).is_err());
+}
+
+#[cfg(feature = "usb")]
+#[test]
+fn usb_printer_class_queries_are_injectable_and_bounded() {
+    #[derive(Default)]
+    struct Fake {
+        device_id: Option<Vec<u8>>,
+        port_status: Option<u8>,
+        device_calls: Vec<(u64, usize)>,
+        port_calls: Vec<u64>,
+    }
+    impl usb::UsbPrinterClassBackend for Fake {
+        fn get_device_id_raw(
+            &mut self,
+            timeout_ms: u64,
+            maximum: usize,
+        ) -> Result<Option<Vec<u8>>, String> {
+            self.device_calls.push((timeout_ms, maximum));
+            Ok(self.device_id.take())
+        }
+
+        fn get_port_status_raw(&mut self, timeout_ms: u64) -> Result<Option<u8>, String> {
+            self.port_calls.push(timeout_ms);
+            Ok(self.port_status.take())
+        }
+    }
+
+    let payload = b"MANUFACTURER:Brother;MODEL:QL-1100;COMMAND SET:PJL;";
+    let mut device_id = u16::try_from(payload.len() + 2)
+        .unwrap()
+        .to_be_bytes()
+        .to_vec();
+    device_id.extend_from_slice(payload);
+    let mut transport = usb::UsbTransport::new(
+        Fake {
+            device_id: Some(device_id),
+            port_status: Some(0x18),
+            ..Default::default()
+        },
+        64,
+        64,
+    );
+    let identifier = transport.get_device_id(250).unwrap().unwrap();
+    assert_eq!(identifier.manufacturer.as_deref(), Some("Brother"));
+    assert_eq!(identifier.model.as_deref(), Some("QL-1100"));
+    assert_eq!(
+        transport.get_port_status(300).unwrap(),
+        Some(usb::UsbPortStatus {
+            selected: true,
+            paper_empty: false,
+            error: false,
+        })
+    );
+    assert_eq!(
+        transport.backend().device_calls,
+        [(250, usb::MAX_IEEE1284_DEVICE_ID_BYTES)]
+    );
+    assert_eq!(transport.backend().port_calls, [300]);
+
+    let mut invalid = usb::UsbTransport::new(Fake::default(), 64, 64);
+    assert!(invalid.get_device_id(0).is_err());
+    assert!(invalid.get_port_status(0).is_err());
+    assert!(invalid.backend().device_calls.is_empty());
+    assert!(invalid.backend().port_calls.is_empty());
+}
+
+#[cfg(feature = "usb")]
+#[test]
+fn usb_port_status_bits_and_serial_revalidation_are_explicit() {
+    assert_eq!(
+        usb::parse_port_status(0x38),
+        usb::UsbPortStatus {
+            selected: true,
+            paper_empty: true,
+            error: false,
+        }
+    );
+    assert!(usb::parse_port_status(0).error);
+    assert!(usb::verify_expected_serial("QL-A", "QL-A").is_ok());
+    assert!(usb::verify_expected_serial("QL-A", "QL-B").is_err());
+}
+
 #[cfg(feature = "serial")]
 #[test]
 fn serial_configuration_has_explicit_printer_defaults() {
@@ -408,6 +519,7 @@ fn ipp_query_and_discovery_use_the_reusable_loopback_boundary() {
         });
         (
             wifi::IppEndpoint {
+                scheme: wifi::IppScheme::Ipp,
                 host: "127.0.0.1".into(),
                 port,
                 resource: "/ipp/print".into(),

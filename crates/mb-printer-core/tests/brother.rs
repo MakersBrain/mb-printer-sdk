@@ -134,6 +134,33 @@ fn brother_status_plan_is_document_free() {
 }
 
 #[test]
+fn response_actions_preserve_wait_and_round_trip_collection() {
+    let wait = Action::WaitForResponse {
+        timeout_ms: 3000,
+        fallback_delay_ms: 0,
+        validation: protocol::ResponseValidation::BrotherStatus32,
+    };
+    assert_eq!(
+        serde_json::to_value(&wait).unwrap(),
+        serde_json::json!({
+            "action": "wait-for-response",
+            "timeout_ms": 3000,
+            "fallback_delay_ms": 0,
+            "validation": "brother-status32"
+        })
+    );
+
+    let collect = Action::CollectResponse {
+        timeout_ms: 5000,
+        idle_timeout_ms: 300,
+        maximum_bytes: 64 * 1024,
+        validation: protocol::ResponseValidation::BrotherSystemReport,
+    };
+    let encoded = serde_json::to_vec(&collect).unwrap();
+    assert_eq!(serde_json::from_slice::<Action>(&encoded).unwrap(), collect);
+}
+
+#[test]
 fn phomemo_status_plan_queries_and_decodes_notification_frames() {
     let phomemo = mb_printer_core::capabilities::by_id("m110").unwrap();
     let plan = protocol::status_plan(&phomemo).unwrap();

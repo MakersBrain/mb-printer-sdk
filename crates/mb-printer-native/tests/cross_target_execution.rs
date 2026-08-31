@@ -48,6 +48,14 @@ fn capture(actions: &[Action], payload: usize) -> Vec<String> {
                 fallback_delay_ms,
                 validation,
             } => events.push(format!("q:{timeout_ms}:{fallback_delay_ms}:{validation:?}")),
+            Action::CollectResponse {
+                timeout_ms,
+                idle_timeout_ms,
+                maximum_bytes,
+                validation,
+            } => events.push(format!(
+                "c:{timeout_ms}:{idle_timeout_ms}:{maximum_bytes}:{validation:?}"
+            )),
         }
     }
     events

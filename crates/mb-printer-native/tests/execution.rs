@@ -292,3 +292,125 @@ fn phomemo_query_echo_is_ignored_before_notification() {
     let progress = execute(&plan, &mut transport).unwrap();
     assert_eq!(progress.responses, vec![vec![0x1a, 0x04, 100]]);
 }
+
+fn collect_plan(maximum_bytes: usize, validation: ResponseValidation) -> Plan {
+    Plan {
+        protocol: mb_printer_core::capabilities::Protocol::Brother,
+        source_commit: String::new(),
+        actions: vec![Action::CollectResponse {
+            timeout_ms: 100,
+            idle_timeout_ms: 1,
+            maximum_bytes,
+            validation,
+        }],
+    }
+}
+
+#[test]
+fn multipart_response_is_reassembled_at_every_marker_split() {
+    let response = b"prefix<<PRINTER CONFIGURATION>>\r\nbody";
+    for split in 1..response.len() {
+        let mut transport = Mock {
+            frames: vec![response[..split].to_vec(), response[split..].to_vec()],
+            exhaust: true,
+            ..Default::default()
+        };
+        let progress = execute(
+            &collect_plan(response.len(), ResponseValidation::BrotherSystemReport),
+            &mut transport,
+        )
+        .unwrap();
+        assert_eq!(progress.responses, [response]);
+    }
+}
+
+#[test]
+fn multipart_response_distinguishes_initial_and_idle_timeout() {
+    let mut no_first_packet = Mock {
+        exhaust: true,
+        ..Default::default()
+    };
+    assert!(matches!(
+        execute(
+            &collect_plan(1024, ResponseValidation::BrotherObjbrnet),
+            &mut no_first_packet
+        ),
+        Err(ExecuteError::Timeout { .. })
+    ));
+
+    let partial = b"@PJL INFO OBJBRNET\r\n\"458867:1\"\r\n".to_vec();
+    let mut idle_after_partial = Mock {
+        frames: vec![partial.clone()],
+        exhaust: true,
+        ..Default::default()
+    };
+    let progress = execute(
+        &collect_plan(partial.len(), ResponseValidation::BrotherObjbrnet),
+        &mut idle_after_partial,
+    )
+    .unwrap();
+    assert_eq!(progress.responses, [partial]);
+}
+
+#[test]
+fn multipart_response_enforces_exact_and_oversized_bounds() {
+    let exact = b"VAP,network,0,0,1,-40,0,2".to_vec();
+    let mut exact_transport = Mock {
+        frames: vec![exact.clone()],
+        exhaust: true,
+        ..Default::default()
+    };
+    assert_eq!(
+        execute(
+            &collect_plan(exact.len(), ResponseValidation::BrotherWifiScan),
+            &mut exact_transport,
+        )
+        .unwrap()
+        .responses
+        .as_slice(),
+        std::slice::from_ref(&exact)
+    );
+
+    let exact_length = exact.len();
+    let mut oversized = Mock {
+        frames: vec![exact, vec![0]],
+        exhaust: true,
+        ..Default::default()
+    };
+    let error = execute(
+        &collect_plan(exact_length, ResponseValidation::BrotherWifiScan),
+        &mut oversized,
+    )
+    .unwrap_err();
+    assert!(matches!(error, ExecuteError::Response { .. }));
+    assert!(!error.to_string().contains("network"));
+}
+
+#[test]
+fn multipart_response_that_never_idles_terminates_at_a_bound() {
+    let mut transport = Mock::default();
+    let error = execute(
+        &collect_plan(3, ResponseValidation::BrotherSystemReport),
+        &mut transport,
+    )
+    .unwrap_err();
+    assert!(matches!(error, ExecuteError::Response { .. }));
+}
+
+#[test]
+fn multipart_response_rejects_zero_bounds_before_transport_io() {
+    let plan = Plan {
+        protocol: mb_printer_core::capabilities::Protocol::Brother,
+        source_commit: String::new(),
+        actions: vec![Action::CollectResponse {
+            timeout_ms: 0,
+            idle_timeout_ms: 1,
+            maximum_bytes: 1,
+            validation: ResponseValidation::BrotherObjbrnet,
+        }],
+    };
+    assert!(matches!(
+        execute(&plan, &mut Mock::default()),
+        Err(ExecuteError::InvalidPlan { action: 0, .. })
+    ));
+}
