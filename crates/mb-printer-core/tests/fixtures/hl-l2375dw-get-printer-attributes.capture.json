@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "model": "Brother HL-L2375DW series",
+  "operation": "Get-Printer-Attributes",
+  "requestedAttributes": ["all"],
+  "capturedAt": "2026-08-31T18:39:03.500581522+02:00",
+  "requestToResponseMilliseconds": 177.526221,
+  "rawCapture": {
+    "responseBytes": 8421,
+    "responseSha256": "b48ef84290f896238432ae0967f87d437ba93706a17e9855051bbca88de54e18",
+    "pcapBytes": 11948,
+    "pcapSha256": "254e942d08495cfcce602d3cf5807d88332268abce88e02e71fa5cf048ecb213",
+    "privateArchive": true,
+    "committed": false
+  },
+  "sanitizedFixture": {
+    "path": "hl-l2375dw-get-printer-attributes.ipp.b64",
+    "encoding": "base64",
+    "decodedBytes": 8421,
+    "decodedSha256": "826e107984e84bb4bf497aad81f53bdce309834e8abeb134686f8768df2aa8b8",
+    "lengthPreserving": true,
+    "redactedClasses": ["private-ip", "hostname", "location", "device-uuid"]
+  },
+  "device": {
+    "uuidSha256": "a9605409ed7842b22d02f65d5ff48fa8a16f4bf5c1ba5c4a2d16ef06a508110b",
+    "firmwareVersions": ["1.72", "1.04"]
+  },
+  "transport": {
+    "kind": "ipp",
+    "endpointSha256": "9cd079fbe25c346ced8b2d8e882da9c83d41b934668b9ea8925ada9fda12411f"
+  },
+  "tooling": {
+    "requestClient": "CUPS ipptool 2.4.19",
+    "captureFormat": "pcapng",
+    "sdkCommit": "fe6f7d184491c6cdd3ea6e5d81d309e7035f3d20",
+    "platform": "Linux 6.12.93 x86_64"
+  }
+}

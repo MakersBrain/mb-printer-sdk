@@ -22,3 +22,8 @@ result. This optional process is informational and is not part of the normal
 development or release workflow. Synthetic and loopback results must still not
 be represented as physical hardware observations.
 
+Read-only protocol captures under `unsigned/` are evidence drafts, not print
+acceptance reports. They use pseudonymous device and endpoint identifiers,
+record raw-artifact hashes while keeping raw captures private, and set both
+`hardwareClaim` and `releaseQualification` to false until an authorized
+operator reviews and signs an applicable qualification record.
