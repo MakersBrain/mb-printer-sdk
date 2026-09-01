@@ -29,6 +29,7 @@ jobs:
       - name: Test unpacked core crate archive
         run: cd target/package/mb-printer-core-$(cat VERSION) && cargo test --locked
       - run: diff -qr schema crates/mb-printer-core/schema && diff -qr fixtures/v4 crates/mb-printer-core/fixtures/v4 && diff -qr fixtures/v3 crates/mb-printer-core/fixtures/v3 && diff -qr fixtures/template crates/mb-printer-core/fixtures/template && diff -qr fixtures/protocol crates/mb-printer-core/fixtures/protocol && diff -qr fixtures/wasm crates/mb-printer-core/fixtures/wasm
+      - run: diff -q fixtures/hardware/unsigned/ql-1110nwb-ipp-inspect-2026-08-31.json crates/mb-printer-core/tests/fixtures/ql-1110nwb-ipp-inspect-2026-08-31.json && diff -q fixtures/hardware/unsigned/hl-l2375dw-ipp-inspect-2026-08-31.json crates/mb-printer-core/tests/fixtures/hl-l2375dw-ipp-inspect-2026-08-31.json
       - run: python3 scripts/generate_dependency_inventory.py && git diff --exit-code -- THIRD_PARTY_LICENSES.md
       - run: sh scripts/check_release_version.sh
   npm-wasm-runtime:
