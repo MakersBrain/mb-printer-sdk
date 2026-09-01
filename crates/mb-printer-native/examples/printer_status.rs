@@ -3,6 +3,7 @@
 //!
 //! cargo run -p mb-printer-native --features usb --example printer_status -- [model-id]
 //! MB_STATUS_TCP=192.0.2.10:9100 cargo run -p mb-printer-native --features usb --example printer_status -- [model-id]
+//! MB_STATUS_ATTEMPTS=5 cargo run -p mb-printer-native --features usb --example printer_status -- [model-id]
 //!
 //! Requires permission on the USB device (a udev rule, or run with sudo).
 
@@ -51,7 +52,22 @@ fn read_status<T: mb_printer_native::Transport>(
     transport: &mut T,
 ) -> Result<(), String> {
     use mb_printer_core::protocol;
-    use mb_printer_native::{WaitOutcome, execute};
+    use mb_printer_native::{ExecuteError, WaitOutcome, execute};
+
+    let attempts = std::env::var("MB_STATUS_ATTEMPTS")
+        .map(|value| {
+            value
+                .parse::<u8>()
+                .map_err(|error| format!("invalid MB_STATUS_ATTEMPTS: {error}"))
+                .and_then(|value| {
+                    if (1..=10).contains(&value) {
+                        Ok(value)
+                    } else {
+                        Err("MB_STATUS_ATTEMPTS must be between 1 and 10".into())
+                    }
+                })
+        })
+        .unwrap_or(Ok(3))?;
 
     // Write the request, then read the reply directly so a malformed frame can be shown.
     let request = protocol::Plan {
@@ -65,46 +81,64 @@ fn read_status<T: mb_printer_native::Transport>(
     };
     if std::env::var("MB_STATUS_EXECUTE").is_ok() {
         // Exercise the executor's own capture path, which the browser route mirrors.
-        let progress = execute(plan, transport).map_err(|error| error.to_string())?;
-        let captured = progress
-            .responses
-            .last()
-            .ok_or("the printer did not return a status reply")?;
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&protocol::brother_parse_status(captured)?)
-                .map_err(|error| error.to_string())?
-        );
-        return Ok(());
-    }
-    execute(&request, transport).map_err(|error| error.to_string())?;
-    let mut reply = Vec::new();
-    for _ in 0..8 {
-        match transport.wait_response(3_000)? {
-            WaitOutcome::Response(bytes) => {
-                reply.extend(bytes);
-                if reply.len() >= 32 {
-                    break;
+        for attempt in 1..=attempts {
+            match execute(plan, transport) {
+                Ok(progress) => {
+                    let captured = progress
+                        .responses
+                        .last()
+                        .ok_or("the printer did not return a status reply")?;
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&protocol::brother_parse_status(captured)?)
+                            .map_err(|error| error.to_string())?
+                    );
+                    return Ok(());
                 }
+                Err(error @ ExecuteError::Timeout { .. }) if attempt < attempts => {
+                    eprintln!("status attempt {attempt}/{attempts} failed: {error}; retrying");
+                    transport.delay_monotonic(250);
+                }
+                Err(error) => return Err(error.to_string()),
             }
-            WaitOutcome::Timeout | WaitOutcome::Unavailable => break,
         }
     }
-    eprintln!(
-        "reply {} bytes: {}",
-        reply.len(),
-        reply
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<Vec<_>>()
-            .join(" ")
-    );
-    let status = protocol::brother_parse_status(&reply)?;
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&status).map_err(|error| error.to_string())?
-    );
-    Ok(())
+
+    for attempt in 1..=attempts {
+        execute(&request, transport).map_err(|error| error.to_string())?;
+        let mut reply = Vec::new();
+        for _ in 0..8 {
+            match transport.wait_response(3_000)? {
+                WaitOutcome::Response(bytes) => {
+                    reply.extend(bytes);
+                    if reply.len() >= 32 {
+                        break;
+                    }
+                }
+                WaitOutcome::Timeout | WaitOutcome::Unavailable => break,
+            }
+        }
+        eprintln!(
+            "status attempt {attempt}/{attempts}: reply {} bytes: {}",
+            reply.len(),
+            reply
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        if !reply.is_empty() || attempt == attempts {
+            let status = protocol::brother_parse_status(&reply)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&status).map_err(|error| error.to_string())?
+            );
+            return Ok(());
+        }
+        transport.delay_monotonic(250);
+    }
+
+    unreachable!("attempt count is validated as positive")
 }
 
 #[cfg(not(feature = "usb"))]
