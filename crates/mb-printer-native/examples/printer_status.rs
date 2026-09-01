@@ -2,19 +2,29 @@
 //! Reads live status from a USB-attached Brother printer and prints it as JSON.
 //!
 //! cargo run -p mb-printer-native --features usb --example printer_status -- [model-id]
+//! MB_STATUS_TCP=192.0.2.10:9100 cargo run -p mb-printer-native --features usb --example printer_status -- [model-id]
 //!
 //! Requires permission on the USB device (a udev rule, or run with sudo).
 
 #[cfg(feature = "usb")]
 fn main() -> Result<(), String> {
     use mb_printer_core::{capabilities, protocol};
-    use mb_printer_native::{Transport, WaitOutcome, execute, transports::usb};
+    use mb_printer_native::transports::{TcpTransport, usb};
 
     let model = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "ql-1110nwb".into());
     let printer = capabilities::by_id(&model).ok_or_else(|| format!("unknown model: {model}"))?;
     let plan = protocol::status_plan(&printer).map_err(|error| error.to_string())?;
+
+    if let Ok(value) = std::env::var("MB_STATUS_TCP") {
+        let address = value
+            .parse()
+            .map_err(|error| format!("invalid MB_STATUS_TCP address: {error}"))?;
+        eprintln!("using Brother raw TCP status endpoint {address}");
+        let mut transport = TcpTransport::connect(address, 16_384, 16_384)?;
+        return read_status(&plan, &mut transport);
+    }
 
     let candidates = usb::discover_rusb_bulk()?;
     let candidate = candidates
@@ -32,6 +42,17 @@ fn main() -> Result<(), String> {
     );
 
     let mut transport = usb::open_rusb_with_limits(candidate, 16_384, 16_384, 64, 3_000)?;
+    read_status(&plan, &mut transport)
+}
+
+#[cfg(feature = "usb")]
+fn read_status<T: mb_printer_native::Transport>(
+    plan: &mb_printer_core::protocol::Plan,
+    transport: &mut T,
+) -> Result<(), String> {
+    use mb_printer_core::protocol;
+    use mb_printer_native::{WaitOutcome, execute};
+
     // Write the request, then read the reply directly so a malformed frame can be shown.
     let request = protocol::Plan {
         actions: plan
@@ -44,7 +65,7 @@ fn main() -> Result<(), String> {
     };
     if std::env::var("MB_STATUS_EXECUTE").is_ok() {
         // Exercise the executor's own capture path, which the browser route mirrors.
-        let progress = execute(&plan, &mut transport).map_err(|error| error.to_string())?;
+        let progress = execute(plan, transport).map_err(|error| error.to_string())?;
         let captured = progress
             .responses
             .last()
@@ -56,7 +77,7 @@ fn main() -> Result<(), String> {
         );
         return Ok(());
     }
-    execute(&request, &mut transport).map_err(|error| error.to_string())?;
+    execute(&request, transport).map_err(|error| error.to_string())?;
     let mut reply = Vec::new();
     for _ in 0..8 {
         match transport.wait_response(3_000)? {
