@@ -54,6 +54,40 @@ def check_files() -> list[str]:
     return errors
 
 
+def check_historical_payloads() -> list[str]:
+    objects = subprocess.run(
+        ["git", "rev-list", "--objects", "--all"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+    )
+    inspected = subprocess.run(
+        [
+            "git",
+            "cat-file",
+            "--batch-check=%(objecttype) %(objectname) %(objectsize) %(rest)",
+        ],
+        cwd=ROOT,
+        check=True,
+        input=objects.stdout,
+        capture_output=True,
+    )
+    errors: list[str] = []
+    for raw_line in inspected.stdout.splitlines():
+        object_type, object_id, raw_size, *path_parts = raw_line.decode().split(" ", 3)
+        if object_type != "blob":
+            continue
+        path = path_parts[0] if path_parts else "<unknown-path>"
+        size = int(raw_size)
+        if size > MAX_FILE_BYTES:
+            errors.append(
+                f"historical blob {object_id} ({path}) exceeds the committed SDK file-size limit"
+            )
+        if Path(path).suffix.lower() in BANNED_SUFFIXES:
+            errors.append(f"historical blob {object_id} ({path}) has a forbidden payload suffix")
+    return errors
+
+
 def check_protocol_metadata() -> list[str]:
     errors: list[str] = []
     metadata = json.loads((ROOT / "fixtures/protocol/specifications.json").read_text())
@@ -94,7 +128,7 @@ def check_protocol_metadata() -> list[str]:
 
 
 def main() -> int:
-    errors = [*check_files(), *check_protocol_metadata()]
+    errors = [*check_files(), *check_historical_payloads(), *check_protocol_metadata()]
     for error in errors:
         print(error, file=sys.stderr)
     return 1 if errors else 0
