@@ -101,6 +101,22 @@ pub fn execute_with_timing<T: Transport>(
     t: &mut T,
     timing: ReferenceTiming,
 ) -> Result<Progress, ExecuteError> {
+    execute_observed(plan, t, timing, &mut |_| {})
+}
+/// Executes a plan and reports durable action/byte progress after every action.
+pub fn execute_with_progress<T: Transport, F: FnMut(&Progress)>(
+    plan: &Plan,
+    t: &mut T,
+    mut progress: F,
+) -> Result<Progress, ExecuteError> {
+    execute_observed(plan, t, ReferenceTiming::Preserve, &mut progress)
+}
+fn execute_observed<T: Transport>(
+    plan: &Plan,
+    t: &mut T,
+    timing: ReferenceTiming,
+    progress_callback: &mut dyn FnMut(&Progress),
+) -> Result<Progress, ExecuteError> {
     let payload_limit = t.payload_limit();
     let command_limit = t.command_limit();
     let span = execution_span(
@@ -115,7 +131,14 @@ pub fn execute_with_timing<T: Transport>(
     let result = {
         let _entered = span.enter();
         let _transport_entered = transport_span.enter();
-        execute_with_timing_inner(plan, t, timing, payload_limit, command_limit)
+        execute_with_timing_inner(
+            plan,
+            t,
+            timing,
+            payload_limit,
+            command_limit,
+            progress_callback,
+        )
     };
     let progress = match &result {
         Ok(progress) => Some(progress),
@@ -156,6 +179,7 @@ fn execute_with_timing_inner<T: Transport>(
     timing: ReferenceTiming,
     limit: usize,
     command_limit: usize,
+    progress_callback: &mut dyn FnMut(&Progress),
 ) -> Result<Progress, ExecuteError> {
     if limit == 0 {
         return Err(ExecuteError::InvalidPlan {
@@ -318,7 +342,8 @@ fn execute_with_timing_inner<T: Transport>(
             },
         };
         result?;
-        p.last_completed_action = Some(i)
+        p.last_completed_action = Some(i);
+        progress_callback(&p)
     }
     Ok(p)
 }

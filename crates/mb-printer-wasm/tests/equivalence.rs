@@ -12,6 +12,20 @@ fn wasm_facade_and_native_core_are_identical() {
     assert_eq!(mb_printer_wasm::render_packed(DOC).unwrap(), native);
     assert!(mb_printer_wasm::validate_document_json(DOC).starts_with('['))
 }
+
+#[test]
+fn measurement_reports_versioned_physical_ink_bounds() {
+    let encoded = mb_printer_wasm::measure_document_json(DOC).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+    assert_eq!(value["layoutVersion"], "mb-printer-layout-v1");
+    assert_eq!(value["elements"][0]["instanceId"], "r");
+    assert_eq!(value["elements"][0]["sourceElementId"], "r");
+    let bounds = &value["contentBounds"];
+    assert!(bounds["x"].as_i64().unwrap() <= 1_000);
+    assert!(bounds["y"].as_i64().unwrap() <= 1_000);
+    assert!(bounds["width"].as_i64().unwrap() >= 8_000);
+    assert!(bounds["height"].as_i64().unwrap() >= 8_000);
+}
 #[test]
 fn wasm_facade_builds_a_rendered_protocol_plan() {
     let plan = mb_printer_wasm::render_protocol_plan(DOC, "m03").unwrap();
@@ -48,6 +62,139 @@ fn wasm_protocol_options_control_copies_density_and_reject_unknown_fields() {
             r#"{"copies":1,"retry":true}"#,
         )
         .is_err()
+    );
+}
+
+#[test]
+fn continuous_job_options_are_capability_checked_and_control_brother_cutting() {
+    let input = DOC
+        .replace("\"height\":10000", "\"height\":100000")
+        .replace(
+            "\"shape\":\"rectangle\"",
+            "\"shape\":\"rectangle\",\"continuous\":true",
+        );
+    let encoded = mb_printer_wasm::render_protocol_plan_with_options(
+        &input,
+        "ql-1110nwb",
+        r#"{"copies":1,"continuous":{"cutMode":"none","extraFeedBeforeUm":0,"extraFeedAfterUm":0,"chainCopies":false}}"#,
+    )
+    .unwrap();
+    let plan: mb_printer_core::protocol::Plan = serde_json::from_str(&encoded).unwrap();
+    assert!(!plan.actions.iter().any(|action| matches!(
+        action,
+        mb_printer_core::protocol::Action::CommandWrite { name, .. } if name == "ESC i M autocut"
+    )));
+    let after_job = mb_printer_wasm::render_protocol_plan_with_options(
+        &input,
+        "ql-1110nwb",
+        r#"{"copies":1,"continuous":{"cutMode":"after-job","extraFeedBeforeUm":0,"extraFeedAfterUm":0,"chainCopies":false}}"#,
+    )
+    .unwrap();
+    let after_job: mb_printer_core::protocol::Plan = serde_json::from_str(&after_job).unwrap();
+    assert!(after_job.actions.iter().any(|action| matches!(
+        action,
+        mb_printer_core::protocol::Action::CommandWrite { name, bytes, .. }
+            if name == "ESC i A cut every" && bytes == &[0x1b, 0x69, 0x41, 1]
+    )));
+    let chained = mb_printer_wasm::render_protocol_plan_with_options(
+        &input,
+        "ql-1110nwb",
+        r#"{"copies":3,"continuous":{"cutMode":"after-each","extraFeedBeforeUm":0,"extraFeedAfterUm":0,"chainCopies":true}}"#,
+    )
+    .unwrap();
+    let chained: mb_printer_core::protocol::Plan = serde_json::from_str(&chained).unwrap();
+    assert!(chained.actions.iter().any(|action| matches!(
+        action,
+        mb_printer_core::protocol::Action::CommandWrite { name, bytes, .. }
+            if name == "ESC i A cut every" && bytes == &[0x1b, 0x69, 0x41, 3]
+    )));
+}
+
+#[test]
+fn continuous_documents_are_capability_checked_without_job_options() {
+    let input = DOC
+        .replace("\"height\":10000", "\"height\":100000")
+        .replace(
+            "\"shape\":\"rectangle\"",
+            "\"shape\":\"rectangle\",\"continuous\":true",
+        );
+
+    assert!(mb_printer_wasm::render_protocol_plan(&input, "ql-1110nwb").is_ok());
+    let unsupported = mb_printer_wasm::render_protocol_plan(&input, "m03").unwrap_err();
+    assert!(unsupported.contains("does not support qualified continuous-media jobs"));
+
+    let too_short = input.replace("\"height\":100000", "\"height\":10000");
+    let invalid_length =
+        mb_printer_wasm::render_protocol_plan(&too_short, "ql-1110nwb").unwrap_err();
+    assert!(invalid_length.contains("length is outside the printer capability range"));
+}
+
+#[test]
+fn every_document_in_a_continuous_batch_is_length_checked() {
+    let first = DOC
+        .replace("\"height\":10000", "\"height\":100000")
+        .replace("\"dpi\":203", "\"dpi\":300")
+        .replace(
+            "\"shape\":\"rectangle\"",
+            "\"shape\":\"rectangle\",\"continuous\":true",
+        );
+    let too_short = first.replace("\"height\":100000", "\"height\":10000");
+    let error = mb_printer_wasm::render_protocol_batch_plan_with_options(
+        &format!("[{first},{too_short}]"),
+        "ql-1110nwb",
+        "{}",
+    )
+    .unwrap_err();
+    assert!(error.contains("length is outside the printer capability range"));
+}
+
+#[test]
+fn native_brother_batch_has_one_boundary_and_one_batch_cut_counter() {
+    let first = DOC
+        .replace("\"height\":10000", "\"height\":100000")
+        .replace("\"dpi\":203", "\"dpi\":300")
+        .replace(
+            "\"shape\":\"rectangle\"",
+            "\"shape\":\"rectangle\",\"continuous\":true",
+        );
+    let second = first.replace("\"height\":100000", "\"height\":120000");
+    let encoded = mb_printer_wasm::render_protocol_batch_plan_with_options(
+        &format!("[{first},{second}]"),
+        "ql-1110nwb",
+        r#"{"copies":2,"continuous":{"cutMode":"after-job","extraFeedBeforeUm":0,"extraFeedAfterUm":0,"chainCopies":true}}"#,
+    )
+    .unwrap();
+    let plan: mb_printer_core::protocol::Plan = serde_json::from_str(&encoded).unwrap();
+    assert_eq!(
+        plan.actions
+            .iter()
+            .filter(|action| matches!(
+                action,
+                mb_printer_core::protocol::Action::JobBoundary {
+                    kind: mb_printer_core::protocol::Boundary::Start
+                }
+            ))
+            .count(),
+        1
+    );
+    assert_eq!(
+        plan.actions
+            .iter()
+            .filter(|action| matches!(action,
+                mb_printer_core::protocol::Action::CommandWrite { name, bytes, .. }
+                    if name == "ESC i A cut every" && bytes == &[0x1b, 0x69, 0x41, 4]
+            ))
+            .count(),
+        1
+    );
+    assert_eq!(
+        plan.actions
+            .iter()
+            .filter(|action| matches!(action,
+                mb_printer_core::protocol::Action::CommandWrite { name, .. } if name == "print"
+            ))
+            .count(),
+        4
     );
 }
 
