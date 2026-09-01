@@ -376,6 +376,18 @@
       "compression": true,
       "minRows": 301,
       "maxRows": 35434,
+      "continuousMedia": {
+        "supported": true,
+        "minimumLengthMm": 25.4,
+        "maximumLengthMm": 3000,
+        "minimumExtraFeedMm": 0,
+        "maximumExtraFeedMm": 0,
+        "cutModes": ["after-each", "after-job", "none"],
+        "automaticCutter": true,
+        "supportsChainedRaster": true,
+        "requiredFeedBeforeMm": 0,
+        "requiredFeedAfterMm": 0
+      },
       "builtin": true,
       "operations": [
         "print",
@@ -408,6 +420,18 @@
       "compression": true,
       "minRows": 301,
       "maxRows": 35434,
+      "continuousMedia": {
+        "supported": true,
+        "minimumLengthMm": 25.4,
+        "maximumLengthMm": 3000,
+        "minimumExtraFeedMm": 0,
+        "maximumExtraFeedMm": 0,
+        "cutModes": ["after-each", "after-job", "none"],
+        "automaticCutter": true,
+        "supportsChainedRaster": true,
+        "requiredFeedBeforeMm": 0,
+        "requiredFeedAfterMm": 0
+      },
       "builtin": true,
       "operations": [
         "print",
@@ -439,6 +463,18 @@
       "compression": true,
       "minRows": 301,
       "maxRows": 35434,
+      "continuousMedia": {
+        "supported": true,
+        "minimumLengthMm": 25.4,
+        "maximumLengthMm": 3000,
+        "minimumExtraFeedMm": 0,
+        "maximumExtraFeedMm": 0,
+        "cutModes": ["after-each", "after-job", "none"],
+        "automaticCutter": true,
+        "supportsChainedRaster": true,
+        "requiredFeedBeforeMm": 0,
+        "requiredFeedAfterMm": 0
+      },
       "builtin": true,
       "operations": [
         "print",
