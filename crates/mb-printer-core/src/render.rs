@@ -6,7 +6,7 @@ use crate::raster::{Dither, GrayRaster, MonoRaster};
 use crate::{
     capabilities::{Alignment, PrinterDefinition, Protocol},
     limits::ProcessingLimits,
-    protocol,
+    media, protocol,
 };
 use font8x8::{BASIC_FONTS, UnicodeFonts};
 use qrcode::{EcLevel, QrCode};
@@ -213,15 +213,30 @@ pub fn render_for_printer_with_limits(
     limits: &ProcessingLimits,
 ) -> Result<protocol::Raster, RenderError> {
     let mut raster = render_with_limits(doc, options, limits)?;
-    let brother_62x29 = printer.protocol == Protocol::Brother
-        && ((doc.media.width.abs_diff(62_000) <= 1_500
-            && doc.media.height.abs_diff(29_000) <= 1_500)
-            || (doc.media.width.abs_diff(29_000) <= 1_500
-                && doc.media.height.abs_diff(62_000) <= 1_500));
-    if brother_62x29 {
-        // DK-11209 has a 696 x 271 printable rectangle on the 1296-dot
-        // QL-1100-series head, offset 56 dots from the right edge.
-        raster = fit_mono_to_box(&raster, 696, 271)?;
+    let brother_media = (printer.protocol == Protocol::Brother)
+        .then(|| {
+            media::match_media(
+                printer,
+                doc.media.width as f64 / 1_000.,
+                if doc.media.continuous {
+                    0.
+                } else {
+                    doc.media.height as f64 / 1_000.
+                },
+            )
+        })
+        .flatten();
+    if let Some(preset) = brother_media.as_ref()
+        && let Some(printable_width) = preset.printable_width_dots
+    {
+        // Brother's DK descriptors locate a narrower printable strip on the
+        // full head. Continuous stock has no fixed printable length, so retain
+        // the requested feed length while fitting the artwork across the roll.
+        let printable_height = preset
+            .printable_length_dots
+            .filter(|height| *height > 0)
+            .unwrap_or(raster.height);
+        raster = fit_mono_to_box(&raster, printable_width, printable_height)?;
     }
     if printer.rotated {
         raster = raster.rotate(crate::raster::Rotation::Clockwise90);
@@ -240,8 +255,12 @@ pub fn render_for_printer_with_limits(
     if fitted_pixels > limits.max_canvas_pixels || fitted_pixels > limits.max_total_pixels {
         return Err(RenderError::TooLarge);
     }
-    let fitted = if brother_62x29 {
-        raster.place_on_head(head, crate::raster::Fit::Right, -56, 0)
+    let fitted = if let Some(offset_right) = brother_media
+        .as_ref()
+        .and_then(|preset| preset.offset_right_dots)
+    {
+        let offset_right = i32::try_from(offset_right).map_err(|_| RenderError::TooLarge)?;
+        raster.place_on_head(head, crate::raster::Fit::Right, -offset_right, 0)
     } else {
         raster.place_on_head_byte_aligned(head, fit, 0, 0)
     }
