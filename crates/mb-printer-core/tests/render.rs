@@ -227,6 +227,37 @@ fn render_to_printer_raster_is_plan_ready() {
     assert_eq!(r.data.len(), 54 * r.height as usize);
     mb_printer_core::protocol::plan(&p, &r, &Default::default()).unwrap();
 }
+
+#[test]
+fn brother_continuous_roll_uses_its_printable_strip_without_shortening_the_label() {
+    let document = Document::from_json(
+        r#"{
+          "version":4,"name":"62 x 60 continuous",
+          "media":{"width":62000,"height":60000,"unit":"micrometre","dpi":300,
+            "orientation":"portrait","printableBounds":{"x":0,"y":0,"width":62000,"height":60000},
+            "shape":"rectangle","continuous":true},
+          "coordinateSystem":{"unit":"micrometre","origin":"top-left","rounding":"half-away-from-zero"},
+          "elements":[{"type":"rectangle","id":"fill","transform":{"x":0,"y":0,"width":62000,"height":60000},
+            "zOrder":0,"strokeWidth":100,"fill":true}],
+          "resources":[],"fields":[],"extensions":{}
+        }"#,
+    )
+    .unwrap();
+    let printer = capabilities::by_id("ql-1100").unwrap();
+    let raster = render::render_for_printer(&document, &printer, Default::default()).unwrap();
+
+    // 60 mm remains 709 rows at 300 dpi. The 62 mm DK roll's 696-dot
+    // printable strip starts at head dot 544 (1296 - 696 - 56).
+    assert_eq!((raster.width_bytes, raster.height), (162, 709));
+    let black = |x: usize, y: usize| {
+        let byte = raster.data[y * usize::from(raster.width_bytes) + x / 8];
+        byte & (0x80 >> (x % 8)) != 0
+    };
+    assert!(!black(543, 354));
+    assert!(black(544, 354));
+    assert!(black(1239, 354));
+    assert!(!black(1240, 354));
+}
 #[test]
 fn code128_is_supported() {
     let source = DOC.replace("\"code39\"", "\"code128\"");
