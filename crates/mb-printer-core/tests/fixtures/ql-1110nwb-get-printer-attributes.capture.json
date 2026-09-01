@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "model": "Brother QL-1110NWB",
+  "operation": "Get-Printer-Attributes",
+  "requestedAttributes": ["all"],
+  "capturedAt": "2026-08-31T19:21:18.043103826+02:00",
+  "requestToResponseMilliseconds": 42.071731,
+  "rawCapture": {
+    "responseBytes": 7536,
+    "responseSha256": "e39b12ba5feb91e5a0d46683aad50d5ccb6e46acae894eb9510f08803cc78565",
+    "pcapBytes": 11072,
+    "pcapSha256": "501252751c9b61bf4d1178f84f2c00bc76c8fa27a759192c81e4afe57890eafc",
+    "privateArchive": true,
+    "committed": false
+  },
+  "sanitizedFixture": {
+    "path": "ql-1110nwb-get-printer-attributes.ipp.b64",
+    "encoding": "base64",
+    "decodedBytes": 7536,
+    "decodedSha256": "021d3f3fb1015d165b32a7d28355f66c5111120bf2c9f8ff564bade18c6951b3",
+    "lengthPreserving": true,
+    "redactedClasses": ["private-ip", "mac-derived-hostname", "device-uuid"]
+  },
+  "device": {
+    "uuidSha256": "16d1ae67c3d7bcbdfdefdf8b4d880c2bad54fe18ad5e272863a25184b2f7e161",
+    "firmwareVersions": ["2.13"]
+  },
+  "transport": {
+    "kind": "ipp",
+    "endpointSha256": "277df1d268537d6ef34689033805e27f18bcdea83e6b4b5c291d61f82fd0e88f"
+  },
+  "tooling": {
+    "requestClient": "CUPS ipptool 2.4.19",
+    "captureFormat": "pcapng",
+    "sdkCommit": "fe6f7d184491c6cdd3ea6e5d81d309e7035f3d20",
+    "platform": "Linux 6.12.93 x86_64"
+  }
+}

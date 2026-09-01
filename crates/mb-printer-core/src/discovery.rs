@@ -288,9 +288,7 @@ pub fn normalize_ipp(
     snapshot.identity.serial_number = first_text(&attributes, b"printer-serial-number");
     snapshot.identity.device_id = first_text(&attributes, b"printer-device-id");
     snapshot.identity.model = first_text(&attributes, b"printer-make-and-model");
-    snapshot.state.state = first_value(&attributes, b"printer-state")
-        .and_then(setting_value)
-        .map(|value| format_setting(&value));
+    snapshot.state.state = first_value(&attributes, b"printer-state").and_then(ipp_printer_state);
     snapshot.state.reasons = values(&attributes, b"printer-state-reasons")
         .filter_map(value_text)
         .collect();
@@ -478,6 +476,16 @@ pub fn normalize_ipp(
         });
     }
     snapshot
+}
+
+fn ipp_printer_state(value: &IppValue) -> Option<String> {
+    match value.data {
+        ValueData::Enum(3) => Some("idle".into()),
+        ValueData::Enum(4) => Some("processing".into()),
+        ValueData::Enum(5) => Some("stopped".into()),
+        ValueData::Enum(value) => Some(value.to_string()),
+        _ => setting_value(value).map(|value| format_setting(&value)),
+    }
 }
 
 /// Normalize only registered SNMP objects. Unknown walk results never become

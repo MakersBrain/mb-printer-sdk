@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 1,
+  "spdxLicense": "AGPL-3.0-or-later",
+  "status": "unsigned",
+  "hardwareClaim": false,
+  "qualificationId": "ql-1110nwb.ipp-inspect.v1.pending-review",
+  "operation": {
+    "kind": "ipp-get-printer-attributes",
+    "requestedAttributes": ["all"],
+    "risk": "read-only",
+    "requestId": 9180
+  },
+  "device": {
+    "manufacturer": "Brother",
+    "model": "QL-1110NWB",
+    "uuidSha256": "16d1ae67c3d7bcbdfdefdf8b4d880c2bad54fe18ad5e272863a25184b2f7e161",
+    "firmwareVersions": ["2.13"]
+  },
+  "origin": {
+    "transport": "ipp",
+    "protocol": "ipp",
+    "endpointSha256": "277df1d268537d6ef34689033805e27f18bcdea83e6b4b5c291d61f82fd0e88f",
+    "capturedAt": "2026-08-31T19:21:18.043103826+02:00",
+    "sdkCommit": "fe6f7d184491c6cdd3ea6e5d81d309e7035f3d20"
+  },
+  "timing": {
+    "requestToResponseMilliseconds": 42.071731,
+    "captureRequestFrame": 5,
+    "captureResponseFrame": 20
+  },
+  "limits": {
+    "maximumMessageBytes": 4194304,
+    "maximumGroups": 32,
+    "maximumAttributes": 4096,
+    "maximumValues": 16384,
+    "maximumNameBytes": 1024,
+    "maximumValueBytes": 1048576,
+    "maximumDecodedBytes": 8388608,
+    "maximumCollectionDepth": 16,
+    "maximumCollectionMembers": 4096
+  },
+  "evidence": {
+    "rawResponseBytes": 7536,
+    "rawResponseSha256": "e39b12ba5feb91e5a0d46683aad50d5ccb6e46acae894eb9510f08803cc78565",
+    "pcapBytes": 11072,
+    "pcapSha256": "501252751c9b61bf4d1178f84f2c00bc76c8fa27a759192c81e4afe57890eafc",
+    "sanitizedFixtureSha256": "021d3f3fb1015d165b32a7d28355f66c5111120bf2c9f8ff564bade18c6951b3",
+    "rawArtifactsPrivate": true
+  },
+  "result": {
+    "status": "successful-ok",
+    "responseGroups": 2,
+    "responseAttributes": 90,
+    "unknownOrOutOfBandValues": 1,
+    "originalBytesPreserved": true,
+    "configurationChanged": false,
+    "configurationChangeBasis": "The capture contains one Get-Printer-Attributes request and its response; no print or configuration-write operation was transmitted."
+  },
+  "review": {
+    "operator": null,
+    "signature": null,
+    "releaseQualification": false,
+    "requiredNextStep": "Authorized operator review and signature"
+  }
+}

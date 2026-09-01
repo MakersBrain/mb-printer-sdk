@@ -19,3 +19,8 @@ artifact by its SHA-256, sign the canonical JSON with the declared operator key,
 and review it before changing a matrix cell to `signed`. Synthetic and loopback
 tests set `hardwareClaim` to false and can never satisfy this gate.
 
+Read-only protocol captures under `unsigned/` are evidence drafts, not print
+acceptance reports. They use pseudonymous device and endpoint identifiers,
+record raw-artifact hashes while keeping raw captures private, and set both
+`hardwareClaim` and `releaseQualification` to false until an authorized
+operator reviews and signs an applicable qualification record.
