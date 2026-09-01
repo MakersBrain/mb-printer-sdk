@@ -1,7 +1,9 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 # Hardware acceptance contract
 
-`matrix.json` is the release-gate inventory. A cell is complete only when every
+`matrix.json` is an optional hardware-evidence inventory. It does not block
+builds, releases, or deployment in this single-developer project. A cell is
+complete only when every
 catalogue ID in `requiredCatalogIds` is named by a valid signed report for that
 exact transport and platform. Similar names, protocol families, and aliases do
 not qualify one another automatically. A report may qualify multiple IDs only
@@ -14,8 +16,9 @@ firmware, complete platform version, operator identity/signature, and retained
 trace artifact required by `report.schema.json`. Failed attempts remain
 `unsigned`; a connection alone is never a print acceptance.
 
-Copy `report-template.json`, replace every `REQUIRED` value, attach the trace
-artifact by its SHA-256, sign the canonical JSON with the declared operator key,
-and review it before changing a matrix cell to `signed`. Synthetic and loopback
-tests set `hardwareClaim` to false and can never satisfy this gate.
+If formal evidence is useful later, copy `report-template.json`, replace every
+`REQUIRED` value, attach the trace artifact by its SHA-256, and record the
+result. This optional process is informational and is not part of the normal
+development or release workflow. Synthetic and loopback results must still not
+be represented as physical hardware observations.
 

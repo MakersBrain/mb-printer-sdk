@@ -138,6 +138,15 @@ struct ZoneBatchOptionsWire {
     current_date: String,
 }
 
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct ContinuousJobOptionsWire {
+    cut_mode: capabilities::ContinuousCutMode,
+    extra_feed_before_um: i64,
+    extra_feed_after_um: i64,
+    chain_copies: bool,
+}
+
 impl Default for ZoneBatchOptionsWire {
     fn default() -> Self {
         Self {
@@ -472,6 +481,12 @@ pub fn render_png(input: &str) -> Result<Vec<u8>, String> {
         .map_err(|e| e.to_string())?;
     export::png_with_limits(&raster, doc.media.dpi, &limits).map_err(|e| e.to_string())
 }
+pub fn measure_document_json(input: &str) -> Result<String, String> {
+    let limits = processing_limits();
+    let doc = parse_document(input, &limits)?;
+    let measurement = render::measure_with_limits(&doc, &limits).map_err(|e| e.to_string())?;
+    bounded_json(&measurement, &limits)
+}
 pub fn render_pdf(input: &str) -> Result<Vec<u8>, String> {
     let limits = processing_limits();
     let doc = parse_document(input, &limits)?;
@@ -709,8 +724,7 @@ pub fn render_protocol_plan_with_options(
         &limits,
     )
     .map_err(|e| e.to_string())?;
-    let mut options: protocol::Options =
-        serde_json::from_str(options_json).map_err(|e| e.to_string())?;
+    let mut options = protocol_options(options_json, &doc, &printer)?;
     if printer.protocol == capabilities::Protocol::Tspl {
         let tenths_mm = |value: i64| {
             u16::try_from(value.saturating_add(50) / 100)
@@ -755,6 +769,182 @@ pub fn render_protocol_plan_with_options(
     let plan = protocol::plan_with_limits(&printer, &raster, &options, &limits)
         .map_err(|e| e.to_string())?;
     bounded_json(&plan, &limits)
+}
+
+pub fn render_protocol_batch_plan_with_options(
+    input: &str,
+    model: &str,
+    options_json: &str,
+) -> Result<String, String> {
+    enforce_json_wire(&[input, options_json])?;
+    let limits = processing_limits();
+    let documents: Vec<Document> = serde_json::from_str(input).map_err(|e| e.to_string())?;
+    let maximum_documents =
+        usize::try_from(mb_printer_core::limits::WireLimits::default().max_request_documents)
+            .unwrap_or(usize::MAX);
+    if documents.is_empty() || documents.len() > maximum_documents {
+        return Err("batch document count exceeds processing limit".into());
+    }
+    let printer = capabilities::by_id(model).ok_or_else(|| format!("unknown model: {model}"))?;
+    if printer.protocol != capabilities::Protocol::Brother {
+        return Err("printer protocol does not support native variable-raster batches".into());
+    }
+    let first = &documents[0];
+    if documents.iter().any(|document| {
+        document.media.continuous != first.media.continuous
+            || document.media.width != first.media.width
+            || document.media.dpi != first.media.dpi
+    }) {
+        return Err("batch documents must use the same roll width, DPI, and media mode".into());
+    }
+    for document in &documents {
+        validate_continuous_document(document, &printer)?;
+    }
+
+    let mut options_value: serde_json::Value =
+        serde_json::from_str(options_json).map_err(|error| error.to_string())?;
+    let copies = options_value
+        .get("copies")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(1);
+    let labels = copies
+        .checked_mul(documents.len() as u64)
+        .ok_or_else(|| "batch label count exceeds range".to_owned())?;
+    if labels == 0 || labels > u64::from(u8::MAX) {
+        return Err("batch label count exceeds cut-every range".into());
+    }
+    let batch_continuous = options_value
+        .get("continuous")
+        .cloned()
+        .map(serde_json::from_value::<ContinuousJobOptionsWire>)
+        .transpose()
+        .map_err(|error| error.to_string())?;
+    options_value["copies"] = serde_json::Value::from(labels);
+    let options_text = serde_json::to_string(&options_value).map_err(|e| e.to_string())?;
+    let mut options = protocol_options(&options_text, first, &printer)?;
+    if batch_continuous.as_ref().is_some_and(|job| {
+        job.chain_copies && matches!(job.cut_mode, capabilities::ContinuousCutMode::AfterEach)
+    }) {
+        options.cut_every =
+            u8::try_from(copies).map_err(|_| "copy count exceeds cut-every range".to_owned())?;
+    }
+    options.copies = 1;
+
+    if printer.protocol == capabilities::Protocol::Brother {
+        let millimetres = |value: i64| {
+            u8::try_from(value.saturating_add(500) / 1000)
+                .map_err(|_| "Brother media dimension is outside range".to_owned())
+        };
+        options.continuous = first.media.continuous;
+        options.brother_media = Some(protocol::BrotherMedia {
+            width_mm: millimetres(first.media.width)?,
+            length_mm: if first.media.continuous {
+                0
+            } else {
+                millimetres(first.media.height)?
+            },
+            continuous: first.media.continuous,
+            feed_margin: 0,
+        });
+    }
+
+    let mut rasters = Vec::with_capacity(usize::try_from(labels).unwrap_or(0));
+    for document in &documents {
+        let raster = render::render_for_printer_with_limits(
+            document,
+            &printer,
+            document_render_options(document),
+            &limits,
+        )
+        .map_err(|e| e.to_string())?;
+        for _ in 0..copies {
+            rasters.push(protocol::Raster {
+                width_bytes: raster.width_bytes,
+                height: raster.height,
+                data: raster.data.clone(),
+            });
+        }
+    }
+    let plan = protocol::plan_batch_with_limits(&printer, &rasters, &options, &limits)
+        .map_err(|e| e.to_string())?;
+    bounded_json(&plan, &limits)
+}
+
+fn protocol_options(
+    options_json: &str,
+    document: &Document,
+    printer: &capabilities::PrinterDefinition,
+) -> Result<protocol::Options, String> {
+    let mut value: serde_json::Value =
+        serde_json::from_str(options_json).map_err(|error| error.to_string())?;
+    let continuous = value
+        .as_object_mut()
+        .and_then(|options| options.get("continuous"))
+        .filter(|value| value.is_object())
+        .cloned();
+    if continuous.is_some() {
+        value
+            .as_object_mut()
+            .expect("continuous options require an object")
+            .remove("continuous");
+    }
+    let mut options: protocol::Options =
+        serde_json::from_value(value).map_err(|error| error.to_string())?;
+    let capabilities = validate_continuous_document(document, printer)?;
+    let Some(value) = continuous else {
+        return Ok(options);
+    };
+    let job: ContinuousJobOptionsWire =
+        serde_json::from_value(value).map_err(|error| error.to_string())?;
+    let capabilities = capabilities
+        .ok_or_else(|| "continuous print options require continuous media".to_owned())?;
+    if !capabilities.cut_modes.contains(&job.cut_mode) {
+        return Err("requested continuous cut mode is unsupported by this printer".into());
+    }
+    if job.chain_copies && !capabilities.supports_chained_raster {
+        return Err("printer does not support chained continuous rasters".into());
+    }
+    let feeds = [job.extra_feed_before_um, job.extra_feed_after_um];
+    if feeds.iter().any(|feed| *feed < 0)
+        || feeds.iter().any(|feed| {
+            (*feed as f64) < capabilities.minimum_extra_feed_mm * 1_000.0
+                || (*feed as f64) > capabilities.maximum_extra_feed_mm * 1_000.0
+        })
+    {
+        return Err("continuous extra feed is outside the printer capability range".into());
+    }
+    options.cut = !matches!(job.cut_mode, capabilities::ContinuousCutMode::None);
+    options.cut_every = match job.cut_mode {
+        capabilities::ContinuousCutMode::AfterEach if job.chain_copies => {
+            u8::try_from(options.copies)
+                .map_err(|_| "copy count exceeds cut-every range".to_owned())?
+        }
+        capabilities::ContinuousCutMode::AfterEach => 1,
+        capabilities::ContinuousCutMode::AfterJob => u8::try_from(options.copies)
+            .map_err(|_| "copy count exceeds cut-every range".to_owned())?,
+        capabilities::ContinuousCutMode::None => 1,
+    };
+    options.continuous = true;
+    Ok(options)
+}
+
+fn validate_continuous_document<'a>(
+    document: &Document,
+    printer: &'a capabilities::PrinterDefinition,
+) -> Result<Option<&'a capabilities::ContinuousMediaCapabilities>, String> {
+    if !document.media.continuous {
+        return Ok(None);
+    }
+    let capabilities = printer
+        .continuous_media
+        .as_ref()
+        .filter(|capabilities| capabilities.supported)
+        .ok_or_else(|| "printer does not support qualified continuous-media jobs".to_owned())?;
+    let length_mm = document.media.height as f64 / 1_000.0;
+    if length_mm < capabilities.minimum_length_mm || length_mm > capabilities.maximum_length_mm {
+        return Err("continuous document length is outside the printer capability range".into());
+    }
+    Ok(Some(capabilities))
 }
 #[cfg(target_arch = "wasm32")]
 mod bindings {
@@ -880,6 +1070,10 @@ mod bindings {
     pub fn render_png(input: &str) -> Result<Vec<u8>, JsValue> {
         super::render_png(input).map_err(|e| JsValue::from_str(&e))
     }
+    #[wasm_bindgen(js_name=measureDocument)]
+    pub fn measure_document(input: &str) -> Result<String, JsValue> {
+        super::measure_document_json(input).map_err(|e| JsValue::from_str(&e))
+    }
     #[wasm_bindgen(js_name=renderPdf)]
     pub fn render_pdf(input: &str) -> Result<Vec<u8>, JsValue> {
         super::render_pdf(input).map_err(|e| JsValue::from_str(&e))
@@ -959,6 +1153,15 @@ mod bindings {
         options_json: &str,
     ) -> Result<String, JsValue> {
         super::render_protocol_plan_with_options(input, model, options_json)
+            .map_err(|e| JsValue::from_str(&e))
+    }
+    #[wasm_bindgen(js_name=renderProtocolBatchPlanWithOptions)]
+    pub fn render_protocol_batch_plan_with_options(
+        input: &str,
+        model: &str,
+        options_json: &str,
+    ) -> Result<String, JsValue> {
+        super::render_protocol_batch_plan_with_options(input, model, options_json)
             .map_err(|e| JsValue::from_str(&e))
     }
 }

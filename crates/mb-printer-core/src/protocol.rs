@@ -191,6 +191,57 @@ pub fn plan_with_limits(
     Ok(plan)
 }
 
+/// Builds one physical Brother raster job containing multiple, potentially
+/// different-length pages. Setup and cutter configuration are emitted once;
+/// every subsequent page carries only its page-specific print information and
+/// raster payload. This is intentionally narrower than concatenating complete
+/// jobs, because batch-level cutting must share one firmware cut counter.
+pub fn plan_batch_with_limits(
+    printer: &PrinterDefinition,
+    rasters: &[Raster],
+    options: &Options,
+    limits: &ProcessingLimits,
+) -> Result<Plan, PlanError> {
+    if rasters.is_empty() {
+        return Err(PlanError::Range("batch documents"));
+    }
+    if printer.protocol != Protocol::Brother {
+        return Err(PlanError::Unsupported("native variable-raster batch"));
+    }
+    if options.copies != 1 {
+        return Err(PlanError::Range("batch copies must be expanded"));
+    }
+
+    let mut actions = Vec::new();
+    for (index, raster) in rasters.iter().enumerate() {
+        let page = plan_inner(printer, raster, options, limits)?;
+        let body = &page.actions[1..page.actions.len() - 1];
+        if index == 0 {
+            actions.push(Action::JobBoundary {
+                kind: Boundary::Start,
+            });
+            actions.extend_from_slice(body);
+            continue;
+        }
+        let page_start = body
+            .iter()
+            .position(|action| matches!(action, Action::CommandWrite { name, .. } if name == "ESC i z print information"))
+            .ok_or(PlanError::Unsupported("Brother batch page boundary"))?;
+        actions.extend(body[page_start..].iter().filter(|action| {
+            !matches!(action, Action::CommandWrite { name, .. } if name == "ESC i M autocut" || name == "ESC i A cut every")
+        }).cloned());
+    }
+    actions.push(Action::JobBoundary {
+        kind: Boundary::End,
+    });
+    enforce_plan_limits(&actions, limits)?;
+    Ok(Plan {
+        protocol: printer.protocol,
+        source_commit: SOURCE_COMMIT.into(),
+        actions,
+    })
+}
+
 fn plan_inner(
     printer: &PrinterDefinition,
     r: &Raster,

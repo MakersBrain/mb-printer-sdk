@@ -168,6 +168,48 @@ fn cloned_zones_repeat_source_zone_elements() {
     assert_eq!(raster.pixels[20 * raster.width as usize + 20], 1);
     assert_eq!(raster.pixels[20 * raster.width as usize + 120], 1);
 }
+
+#[test]
+fn measurement_expands_clone_instances_in_root_coordinates() {
+    let source = r#"{
+      "version":4,"name":"measure clones",
+      "media":{"width":20000,"height":10000,"unit":"micrometre","dpi":254,"orientation":"landscape","printableBounds":{"x":0,"y":0,"width":20000,"height":10000},"shape":"rectangle","zones":[{"id":"source","bounds":{"x":0,"y":0,"width":10000,"height":10000}},{"id":"copy","bounds":{"x":10000,"y":0,"width":10000,"height":10000},"cloneOf":"source"}]},
+      "coordinateSystem":{"unit":"micrometre","origin":"top-left","rounding":"half-away-from-zero"},
+      "elements":[{"type":"rectangle","id":"mark","transform":{"x":1000,"y":2000,"width":3000,"height":3000},"zOrder":0,"constraints":{"zone":"source"},"strokeWidth":100,"fill":true}],
+      "resources":[],"fields":[],"extensions":{}
+    }"#;
+    let document = Document::from_json(source).unwrap();
+    let measured = render::measure_with_limits(&document, &Default::default()).unwrap();
+    assert_eq!(measured.elements.len(), 2);
+    assert_eq!(measured.elements[0].instance_id, "mark@source");
+    assert_eq!(measured.elements[1].instance_id, "mark@copy");
+    assert!(measured.elements[0].bounds.x < 2_000);
+    assert!(measured.elements[1].bounds.x >= 10_000);
+    assert!(measured.content_bounds.unwrap().width >= 13_000);
+}
+
+#[test]
+fn measurement_uses_auto_height_layout_beyond_the_authored_cut_line() {
+    let source = r#"{"version":4,"name":"auto height","media":{"width":20000,"height":10000,"unit":"micrometre","dpi":254,"orientation":"portrait","printableBounds":{"x":0,"y":0,"width":20000,"height":10000},"shape":"rectangle","continuous":true},"coordinateSystem":{"unit":"micrometre","origin":"top-left","rounding":"half-away-from-zero"},"elements":[{"type":"text","id":"text","transform":{"x":1000,"y":1000,"width":5000,"height":1000},"zOrder":0,"text":"one two three four five six seven eight nine ten eleven twelve","fontSize":2500,"horizontalAlign":"left","verticalAlign":"top","overflow":"auto-height"}],"resources":[],"fields":[],"extensions":{}}"#;
+    let document = Document::from_json(source).unwrap();
+    let measured = render::measure_with_limits(&document, &Default::default()).unwrap();
+    let bounds = measured.content_bounds.unwrap();
+    assert!(bounds.y + bounds.height > document.media.height);
+    assert_eq!(measured.layout_version, render::LAYOUT_VERSION);
+}
+
+#[test]
+fn measurement_includes_rotation_and_stroke_in_physical_bounds() {
+    let document = rotation_document(
+        r#"{"type":"rectangle","id":"mark","transform":{"x":2000,"y":2000,"width":4000,"height":1000,"rotationMillidegrees":45000},"zOrder":0,"strokeWidth":500,"fill":false}"#,
+    );
+    let bounds = render::measure_with_limits(&document, &Default::default())
+        .unwrap()
+        .content_bounds
+        .unwrap();
+    assert!(bounds.height > 1_000);
+    assert!(bounds.width > 3_000);
+}
 #[test]
 fn group_visibility_and_zone_constraints_apply_to_children() {
     let hidden = rotation_document(

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 use crate::document::{
-    BarcodeSymbology, Common, Document, Element, HorizontalAlign, TextOverflow, VerticalAlign,
+    BarcodeSymbology, Bounds, Common, Document, Element, HorizontalAlign, TextOverflow,
+    VerticalAlign,
 };
 use crate::raster::{Dither, GrayRaster, MonoRaster};
 use crate::{
@@ -10,6 +11,7 @@ use crate::{
 };
 use font8x8::{BASIC_FONTS, UnicodeFonts};
 use qrcode::{EcLevel, QrCode};
+use serde::Serialize;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -39,6 +41,27 @@ impl Default for RenderOptions {
             max_pixels: 100_000_000,
         }
     }
+}
+
+pub const LAYOUT_VERSION: &str = "mb-printer-layout-v1";
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MeasuredElementBounds {
+    pub instance_id: String,
+    pub source_element_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub zone_id: Option<String>,
+    pub bounds: Bounds,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentMeasurement {
+    pub elements: Vec<MeasuredElementBounds>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_bounds: Option<Bounds>,
+    pub layout_version: &'static str,
 }
 
 /// Resolve the canonical document dither extension for every host target.
@@ -152,6 +175,232 @@ pub fn render_with_limits(
         .dither(options.dither)
         .map_err(|_| RenderError::TooLarge)
 }
+
+/// Measure physical ink bounds with the same placement and drawing code used by rendering.
+/// The temporary canvas grows past the authored cut line so unrotated auto-height text is not
+/// clipped by the current finite media height.
+pub fn measure_with_limits(
+    doc: &Document,
+    limits: &ProcessingLimits,
+) -> Result<DocumentMeasurement, RenderError> {
+    doc.validate_with_limits(limits).map_err(|errors| {
+        RenderError::Validation(
+            errors
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("; "),
+        )
+    })?;
+    let width = u32::try_from(micrometres_to_dots(doc.media.width, doc.media.dpi))
+        .map_err(|_| RenderError::TooLarge)?;
+    let height = measurement_height_dots(doc, limits)?;
+    let canvas_pixels = u64::from(width)
+        .checked_mul(u64::from(height))
+        .ok_or(RenderError::TooLarge)?;
+    if canvas_pixels > limits.max_canvas_pixels {
+        return Err(RenderError::TooLarge);
+    }
+
+    let mut elements = Vec::new();
+    let mut ordered: Vec<_> = doc.elements.iter().collect();
+    ordered.sort_by_key(|element| common(element).z_order);
+    for element in ordered {
+        if matches!(element, Element::Group { .. }) || !effectively_visible(element, doc) {
+            continue;
+        }
+        let source = effective_zone(element, doc);
+        let mut placements = vec![source.map(str::to_owned)];
+        if let Some(source_id) = source {
+            placements.extend(
+                doc.media
+                    .zones
+                    .iter()
+                    .filter(|zone| {
+                        zone.id != source_id && zone_clones(&doc.media.zones, &zone.id, source_id)
+                    })
+                    .map(|zone| Some(zone.id.clone())),
+            );
+        }
+        for zone_id in placements {
+            let mut layer = GrayRaster::try_new(width, height, 255, limits.max_canvas_pixels)
+                .map_err(|_| RenderError::TooLarge)?;
+            let mut budget = RenderBudget::new(limits.max_total_pixels);
+            draw(
+                &mut layer,
+                element,
+                doc.media.dpi,
+                doc,
+                zone_id.as_deref(),
+                limits,
+                &mut budget,
+            )?;
+            if let Some(bounds) = gray_ink_bounds(&layer, doc.media.dpi) {
+                let source_id = common(element).id.clone();
+                let instance_id = zone_id
+                    .as_ref()
+                    .map_or_else(|| source_id.clone(), |zone| format!("{source_id}@{zone}"));
+                elements.push(MeasuredElementBounds {
+                    instance_id,
+                    source_element_id: source_id,
+                    zone_id,
+                    bounds,
+                });
+            }
+        }
+    }
+    let content_bounds = elements
+        .iter()
+        .map(|element| element.bounds)
+        .reduce(union_physical_bounds);
+    Ok(DocumentMeasurement {
+        elements,
+        content_bounds,
+        layout_version: LAYOUT_VERSION,
+    })
+}
+
+fn measurement_height_dots(doc: &Document, limits: &ProcessingLimits) -> Result<u32, RenderError> {
+    let mut bottom = micrometres_to_dots(doc.media.height, doc.media.dpi).max(1);
+    for element in &doc.elements {
+        if matches!(element, Element::Group { .. }) || !effectively_visible(element, doc) {
+            continue;
+        }
+        let source = effective_zone(element, doc);
+        let mut zones = vec![source];
+        if let Some(source_id) = source {
+            zones.extend(
+                doc.media
+                    .zones
+                    .iter()
+                    .filter(|zone| {
+                        zone.id != source_id && zone_clones(&doc.media.zones, &zone.id, source_id)
+                    })
+                    .map(|zone| Some(zone.id.as_str())),
+            );
+        }
+        for zone in zones {
+            let placement = placement_px(common(element), doc.media.dpi, doc, zone);
+            let candidate = if placement.rotation_millidegrees == 0 {
+                i64::from(placement.y)
+                    + i64::from(
+                        auto_height_dots(element, placement, doc, limits)?.unwrap_or(placement.h),
+                    )
+                    + i64::from(stroke_extension_dots(element, doc.media.dpi))
+                    + 2
+            } else {
+                let diagonal = integer_sqrt_ceil(
+                    u64::try_from(i64::from(placement.w).pow(2) + i64::from(placement.h).pow(2))
+                        .unwrap_or(u64::MAX),
+                );
+                i64::from(placement.y + placement.h / 2)
+                    + i64::try_from(diagonal.div_ceil(2)).map_err(|_| RenderError::TooLarge)?
+                    + 3
+            };
+            bottom = bottom.max(candidate);
+        }
+    }
+    u32::try_from(bottom.max(1)).map_err(|_| RenderError::TooLarge)
+}
+
+fn auto_height_dots(
+    element: &Element,
+    placement: Placement,
+    doc: &Document,
+    limits: &ProcessingLimits,
+) -> Result<Option<i32>, RenderError> {
+    let Element::Text {
+        text,
+        font_resource,
+        font_size,
+        overflow: TextOverflow::AutoHeight,
+        ..
+    } = element
+    else {
+        return Ok(None);
+    };
+    let size = micrometres_to_dots(*font_size, doc.media.dpi).max(8) as i32;
+    let lines = if let Some(id) = font_resource {
+        let resource = doc
+            .resources
+            .iter()
+            .find(|resource| resource.id == *id)
+            .ok_or_else(|| RenderError::Resource(id.clone()))?;
+        let bytes = resource
+            .decoded_bytes_with_limits(limits)
+            .map_err(|_| RenderError::Font(id.clone()))?;
+        let face = rustybuzz::Face::from_slice(&bytes, 0)
+            .ok_or_else(|| RenderError::Font("cannot parse OpenType face".into()))?;
+        embedded_wrap(&face, text, size, placement.w).len() as i32 * size
+    } else {
+        let scale = (size / 8).max(1);
+        wrap(text, (placement.w / (8 * scale)).max(1) as usize).len() as i32 * 8 * scale
+    };
+    Ok(Some(lines.max(placement.h)))
+}
+
+fn stroke_extension_dots(element: &Element, dpi: u16) -> i32 {
+    match element {
+        Element::Line { stroke_width, .. }
+        | Element::Rectangle { stroke_width, .. }
+        | Element::Ellipse { stroke_width, .. }
+        | Element::Triangle { stroke_width, .. } => {
+            (micrometres_to_dots(*stroke_width, dpi).max(1) as i32 + 1) / 2
+        }
+        _ => 0,
+    }
+}
+
+fn gray_ink_bounds(raster: &GrayRaster, dpi: u16) -> Option<Bounds> {
+    let mut left = raster.width;
+    let mut top = raster.height;
+    let mut right = 0;
+    let mut bottom = 0;
+    let mut found = false;
+    for y in 0..raster.height {
+        for x in 0..raster.width {
+            if raster.pixels[(y * raster.width + x) as usize] < 255 {
+                found = true;
+                left = left.min(x);
+                top = top.min(y);
+                right = right.max(x + 1);
+                bottom = bottom.max(y + 1);
+            }
+        }
+    }
+    found.then(|| {
+        let x = dots_to_micrometres_floor(left, dpi);
+        let y = dots_to_micrometres_floor(top, dpi);
+        let right_um = dots_to_micrometres_ceil(right, dpi);
+        let bottom_um = dots_to_micrometres_ceil(bottom, dpi);
+        Bounds {
+            x,
+            y,
+            width: right_um - x,
+            height: bottom_um - y,
+        }
+    })
+}
+
+fn dots_to_micrometres_floor(value: u32, dpi: u16) -> i64 {
+    i64::try_from(u128::from(value) * 25_400 / u128::from(dpi)).unwrap_or(i64::MAX)
+}
+fn dots_to_micrometres_ceil(value: u32, dpi: u16) -> i64 {
+    i64::try_from((u128::from(value) * 25_400).div_ceil(u128::from(dpi))).unwrap_or(i64::MAX)
+}
+fn union_physical_bounds(left: Bounds, right: Bounds) -> Bounds {
+    let x = left.x.min(right.x);
+    let y = left.y.min(right.y);
+    let right_edge = (left.x + left.width).max(right.x + right.width);
+    let bottom_edge = (left.y + left.height).max(right.y + right.height);
+    Bounds {
+        x,
+        y,
+        width: right_edge - x,
+        height: bottom_edge - y,
+    }
+}
+
 fn effectively_visible(element: &Element, doc: &Document) -> bool {
     if !common(element).visible {
         return false;
