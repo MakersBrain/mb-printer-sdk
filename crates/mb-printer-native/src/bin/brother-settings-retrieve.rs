@@ -227,7 +227,7 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> Result<Options, St
             }
             let selector = positional
                 .get(1)
-                .map(|value| parse_usb_selector(&value))
+                .map(|value| parse_usb_selector(value))
                 .transpose()?;
             Target::Usb(selector)
         }
