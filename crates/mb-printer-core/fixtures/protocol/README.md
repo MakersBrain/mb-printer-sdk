@@ -7,6 +7,12 @@ protocol families with non-default density, feed, continuous-media,
 speed, copies, gap, offset, and label dimensions. The JSON records the exact
 reference commit and capture method.
 
+`specifications.json` assigns stable fixture identifiers using the
+`python-actions:<protocol>:<model>:<profile>` convention and records the pinned
+research specification commit, semantic version, maturity, current authority,
+and intentional deviations for every implemented protocol. A non-final
+research document is always marked non-authoritative.
+
 The Rust test reconstructs each plan and compares every observable write,
 physical raster chunk, delay, and response wait. Job boundaries and notification
 subscription are Rust executor metadata and therefore are intentionally omitted

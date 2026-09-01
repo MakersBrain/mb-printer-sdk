@@ -17,6 +17,7 @@ jobs:
           components: rustfmt, clippy
       - run: cargo fmt --all --check
       - run: python3 scripts/generate_schema_projection.py --check
+      - run: python3 scripts/check_research_boundary.py
       - run: cargo test --workspace --all-features --locked
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - run: cargo check -p mb-printer-native --no-default-features --locked
