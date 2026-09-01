@@ -40,6 +40,8 @@ pub struct PrinterDefinition {
     pub min_rows: u32,
     #[serde(default)]
     pub max_rows: u32,
+    #[serde(default)]
+    pub continuous_media: Option<ContinuousMediaCapabilities>,
     /// Operations this model is allowed to expose.
     ///
     /// Printer definitions authored before operation capabilities were added
@@ -47,6 +49,32 @@ pub struct PrinterDefinition {
     /// compatible while making non-print operations explicit per model.
     #[serde(default = "default_operations")]
     pub operations: Vec<PrinterOperation>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ContinuousMediaCapabilities {
+    pub supported: bool,
+    pub minimum_length_mm: f64,
+    pub maximum_length_mm: f64,
+    pub minimum_extra_feed_mm: f64,
+    pub maximum_extra_feed_mm: f64,
+    pub cut_modes: Vec<ContinuousCutMode>,
+    pub automatic_cutter: bool,
+    pub supports_chained_raster: bool,
+    /// Mandatory firmware feed, distinct from artwork margins and operator feed.
+    #[serde(default)]
+    pub required_feed_before_mm: f64,
+    #[serde(default)]
+    pub required_feed_after_mm: f64,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ContinuousCutMode {
+    AfterEach,
+    AfterJob,
+    None,
 }
 fn dpi() -> u16 {
     203

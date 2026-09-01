@@ -72,6 +72,37 @@ fn first_write_error_is_marked_potentially_accepted() {
     assert!(transport.writes.is_empty());
 }
 #[test]
+fn observed_execution_reports_action_and_byte_progress() {
+    let plan = Plan {
+        protocol: mb_printer_core::capabilities::Protocol::MSeries,
+        source_commit: String::new(),
+        actions: vec![
+            Action::CommandWrite {
+                name: "one".into(),
+                bytes: vec![1],
+                atomic: true,
+            },
+            Action::Delay { milliseconds: 1 },
+            Action::CommandWrite {
+                name: "two".into(),
+                bytes: vec![2, 3],
+                atomic: true,
+            },
+        ],
+    };
+    let mut transport = Mock {
+        command_limit: Some(8),
+        ..Default::default()
+    };
+    let mut observed = Vec::new();
+    let result = execute_with_progress(&plan, &mut transport, |progress| {
+        observed.push((progress.last_completed_action, progress.bytes_written))
+    })
+    .unwrap();
+    assert_eq!(observed, vec![(Some(0), 1), (Some(1), 1), (Some(2), 3)]);
+    assert_eq!(result.bytes_written, 3)
+}
+#[test]
 fn brother_status_policy_requires_exactly_32_bytes() {
     let plan = Plan {
         protocol: mb_printer_core::capabilities::Protocol::Brother,

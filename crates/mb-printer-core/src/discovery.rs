@@ -539,7 +539,9 @@ pub fn normalize_snmp(
                     .get(&binding.oid)
                     .is_some_and(|object| object.sensitive),
             }],
-            original_bytes: (index == 0).then(|| response.original_bytes.clone()),
+            original_bytes: (index == 0)
+                .then(|| response.evidence.sanitized_bytes.clone())
+                .flatten(),
             evidence,
         });
     }
@@ -559,7 +561,17 @@ fn snmp_setting_value(value: &crate::snmp::ObjectValue) -> Option<SettingValue> 
             "{}.{}.{}.{}",
             value[0], value[1], value[2], value[3]
         ))),
-        ObjectValue::Counter(value) => i64::try_from(*value).ok().map(SettingValue::Integer),
+        ObjectValue::Counter32(value)
+        | ObjectValue::Gauge32(value)
+        | ObjectValue::Unsigned32(value)
+        | ObjectValue::TimeTicks(value) => Some(SettingValue::Integer(i64::from(*value))),
+        ObjectValue::Counter64(value) | ObjectValue::Counter(value) => {
+            i64::try_from(*value).ok().map(SettingValue::Integer)
+        }
+        ObjectValue::Opaque(value) | ObjectValue::Nsap(value) => {
+            Some(SettingValue::Bytes(value.clone()))
+        }
+        ObjectValue::Null => None,
         ObjectValue::NoSuchObject
         | ObjectValue::NoSuchInstance
         | ObjectValue::EndOfMibView
@@ -572,9 +584,16 @@ fn snmp_value_tag(value: &crate::snmp::ObjectValue) -> u8 {
     match value {
         ObjectValue::Integer(_) => 0x02,
         ObjectValue::Bytes(_) => 0x04,
+        ObjectValue::Null => 0x05,
         ObjectValue::ObjectId(_) => 0x06,
         ObjectValue::IpAddress(_) => 0x40,
-        ObjectValue::Counter(_) => 0x41,
+        ObjectValue::Counter32(_) | ObjectValue::Counter(_) => 0x41,
+        ObjectValue::Gauge32(_) => 0x42,
+        ObjectValue::TimeTicks(_) => 0x43,
+        ObjectValue::Opaque(_) => 0x44,
+        ObjectValue::Nsap(_) => 0x45,
+        ObjectValue::Counter64(_) => 0x46,
+        ObjectValue::Unsigned32(_) => 0x47,
         ObjectValue::NoSuchObject => 0x80,
         ObjectValue::NoSuchInstance => 0x81,
         ObjectValue::EndOfMibView => 0x82,
