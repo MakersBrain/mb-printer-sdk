@@ -16,10 +16,33 @@ portable dependency graph:
   `AsyncBtleplugTransport` connect/write/notification APIs.
 - `wifi`: Brother PJL configuration plus reusable bounded IPP status/media
   queries and candidate probing.
+- `snmp`: bounded, allowlisted SNMPv2c property reads and Brother firmware
+  inventory inspection. `snmp-v3` adds RustCrypto-backed SNMPv3 authPriv.
 - `native-input`: bounded PDF/PNG/JPEG/SVG filesystem ingestion.
 
 The backend traits remain public for deterministic tests and alternative
 platform integrations. No hardware feature is enabled by default.
+
+## Qualified SNMP inspection
+
+`mb-printer-snmp` accepts semantic properties from the compiled Brother
+catalogue, never arbitrary OIDs. Pass the community through an environment
+variable so it is not exposed in the process command line:
+
+```console
+export MB_PRINTER_SNMP_COMMUNITY='private-local-value'
+cargo run -p mb-printer-native --features snmp --bin mb-printer-snmp -- \
+  inspect-firmware --endpoint 192.168.1.25:161 --model HL-L2375DW \
+  --qualification-id local-hl-l2375dw
+
+cargo run -p mb-printer-native --features snmp --bin mb-printer-snmp -- \
+  read-property --endpoint 192.168.1.25:161 --model HL-L2375DW \
+  --qualification-id local-hl-l2375dw --property printer.serial-number
+```
+
+The initial production catalogue is read-only. Firmware inventory fetches the
+fixed 16-instance Brother record sequence in one bounded request and emits
+credential-elided response hashes with each observation.
 
 ## Read-only Brother settings retrieval
 

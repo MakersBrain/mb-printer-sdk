@@ -3,8 +3,8 @@ use mb_printer_core::discovery::{
     ObservationOrigin, ProtocolFamily, ProtocolSource, SettingValue, TransportKind, normalize_snmp,
 };
 use mb_printer_core::snmp::{
-    DecodeLimits, ObjectId, ObjectRegistry, ObjectValue, RegisteredObject, Response, SnmpError,
-    VarBind, decode_response, encode_get, encode_get_next,
+    DecodeLimits, ObjectId, ObjectRegistry, ObjectValue, RegisteredObject, Response,
+    ResponseEvidence, SnmpError, VarBind, decode_response, encode_get, encode_get_next,
 };
 
 fn registry() -> (ObjectRegistry, ObjectId) {
@@ -31,7 +31,11 @@ fn registered_snmp_values_use_protocol_neutral_evidence() {
             oid: oid.clone(),
             value: ObjectValue::Bytes(b"Office printer".to_vec()),
         }],
-        original_bytes: b"bounded-snmp-message".to_vec(),
+        evidence: ResponseEvidence {
+            credential_elided_hash: [7; 32],
+            original_length: 20,
+            sanitized_bytes: Some(b"bounded-snmp-message".to_vec()),
+        },
     };
     let snapshot = normalize_snmp(
         &response,
@@ -90,10 +94,13 @@ fn bounded_response_decoder_checks_correlation_and_preserves_unknown_values() {
     response[pdu] = 0xa2;
     let decoded = decode_response(&response, 42, DecodeLimits::default()).unwrap();
     assert_eq!(decoded.varbinds[0].oid, oid);
-    assert!(matches!(
-        decoded.varbinds[0].value,
-        ObjectValue::Unknown { tag: 0x05, .. }
-    ));
+    assert_eq!(decoded.varbinds[0].value, ObjectValue::Null);
+    let sanitized = decoded.evidence.sanitized_bytes.as_deref().unwrap();
+    assert!(
+        !sanitized
+            .windows(b"private".len())
+            .any(|value| value == b"private")
+    );
     assert_eq!(
         decode_response(&response, 43, DecodeLimits::default()),
         Err(SnmpError::RequestIdMismatch)
