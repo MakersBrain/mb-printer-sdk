@@ -1,13 +1,145 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Reusable blocking native transport and discovery boundaries.
-use crate::{Transport, WaitOutcome};
-use std::{
-    fs::{File, OpenOptions},
-    io::{Read, Write},
-    net::{SocketAddr, TcpStream},
-    path::Path,
-    time::Duration,
+//! Reusable asynchronous native transport and discovery boundaries.
+use crate::{
+    NotificationSupport, Transport, TransportError, TransportErrorKind, TransportFuture,
+    WaitOutcome, WriteKind,
 };
+#[cfg(all(feature = "bluetooth-rfcomm", target_os = "linux"))]
+use std::fs::File;
+use std::{net::SocketAddr, path::Path, time::Duration};
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+fn io_error(operation: &'static str, _error: impl std::fmt::Display) -> TransportError {
+    TransportError::new(TransportErrorKind::Io, format!("{operation} failed"))
+}
+
+#[cfg(any(feature = "serial", feature = "usb", feature = "bluetooth-rfcomm"))]
+trait BlockingIo: Send + 'static {
+    fn write(&mut self, bytes: &[u8]) -> Result<(), String>;
+    fn read(&mut self, timeout: Duration) -> Result<WaitOutcome, String>;
+    fn disconnect(&mut self) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+#[cfg(any(feature = "serial", feature = "usb", feature = "bluetooth-rfcomm"))]
+enum DeviceCommand {
+    Write(Vec<u8>, tokio::sync::oneshot::Sender<Result<(), String>>),
+    Read(
+        Duration,
+        tokio::sync::oneshot::Sender<Result<WaitOutcome, String>>,
+    ),
+    Disconnect(tokio::sync::oneshot::Sender<Result<(), String>>),
+}
+
+/// One bounded queue and one persistent owner thread per blocking device.
+#[cfg(any(feature = "serial", feature = "usb", feature = "bluetooth-rfcomm"))]
+struct PersistentDevice {
+    commands: tokio::sync::mpsc::Sender<DeviceCommand>,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+
+#[cfg(any(feature = "serial", feature = "usb", feature = "bluetooth-rfcomm"))]
+impl PersistentDevice {
+    fn spawn<B: BlockingIo>(mut backend: B) -> Self {
+        let (commands, mut receiver) = tokio::sync::mpsc::channel(8);
+        let worker = std::thread::spawn(move || {
+            while let Some(command) = receiver.blocking_recv() {
+                match command {
+                    DeviceCommand::Write(bytes, reply) => {
+                        let _ = reply.send(backend.write(&bytes));
+                    }
+                    DeviceCommand::Read(timeout, reply) => {
+                        let _ = reply.send(backend.read(timeout));
+                    }
+                    DeviceCommand::Disconnect(reply) => {
+                        let result = backend.disconnect();
+                        let _ = reply.send(result);
+                        break;
+                    }
+                }
+            }
+        });
+        Self {
+            commands,
+            worker: Some(worker),
+        }
+    }
+
+    async fn write(&self, bytes: &[u8]) -> Result<(), TransportError> {
+        let (reply, result) = tokio::sync::oneshot::channel();
+        self.commands
+            .send(DeviceCommand::Write(bytes.to_vec(), reply))
+            .await
+            .map_err(|_| {
+                TransportError::new(TransportErrorKind::Disconnected, "device worker stopped")
+            })?;
+        result
+            .await
+            .map_err(|_| {
+                TransportError::new(TransportErrorKind::Disconnected, "device worker stopped")
+            })?
+            .map_err(|error| io_error("device write", error))
+    }
+
+    async fn read(&self, timeout: Duration) -> Result<WaitOutcome, TransportError> {
+        let (reply, result) = tokio::sync::oneshot::channel();
+        self.commands
+            .send(DeviceCommand::Read(timeout, reply))
+            .await
+            .map_err(|_| {
+                TransportError::new(TransportErrorKind::Disconnected, "device worker stopped")
+            })?;
+        result
+            .await
+            .map_err(|_| {
+                TransportError::new(TransportErrorKind::Disconnected, "device worker stopped")
+            })?
+            .map_err(|error| io_error("device read", error))
+    }
+
+    async fn disconnect(&mut self) -> Result<(), TransportError> {
+        if self.worker.is_none() {
+            return Ok(());
+        }
+        let (reply, result) = tokio::sync::oneshot::channel();
+        self.commands
+            .send(DeviceCommand::Disconnect(reply))
+            .await
+            .map_err(|_| {
+                TransportError::new(TransportErrorKind::Disconnected, "device worker stopped")
+            })?;
+        let backend_result = result
+            .await
+            .map_err(|_| {
+                TransportError::new(TransportErrorKind::Disconnected, "device worker stopped")
+            })?
+            .map_err(|error| io_error("device disconnect", error));
+        if let Some(worker) = self.worker.take() {
+            tokio::task::spawn_blocking(move || worker.join())
+                .await
+                .map_err(|_| {
+                    TransportError::new(TransportErrorKind::Io, "device worker join failed")
+                })?
+                .map_err(|_| {
+                    TransportError::new(TransportErrorKind::Io, "device worker panicked")
+                })?;
+        }
+        backend_result
+    }
+}
+
+#[cfg(any(feature = "serial", feature = "usb", feature = "bluetooth-rfcomm"))]
+impl Drop for PersistentDevice {
+    fn drop(&mut self) {
+        if self.worker.is_some() {
+            let (reply, _) = tokio::sync::oneshot::channel();
+            let _ = self.commands.try_send(DeviceCommand::Disconnect(reply));
+            // Never block Drop. Dropping the handle detaches a tardy worker.
+            self.worker.take();
+        }
+    }
+}
 
 #[cfg(feature = "snmp")]
 pub mod snmp;
@@ -30,37 +162,65 @@ pub struct PrinterStatus {
     pub raw: Vec<u8>,
 }
 pub trait StatusBackend {
-    fn query_status(&mut self, timeout_ms: u64) -> Result<PrinterStatus, String>;
+    fn query_status(
+        &mut self,
+        timeout: Duration,
+    ) -> TransportFuture<'_, Result<PrinterStatus, TransportError>>;
 }
 pub struct CommandStatusBackend<T, F> {
     pub transport: T,
     pub query: Vec<u8>,
     pub decode: F,
 }
-impl<T: Transport, F: Fn(&[u8]) -> Result<PrinterStatus, String>> StatusBackend
+impl<T: Transport, F: Fn(&[u8]) -> Result<PrinterStatus, String> + Send> StatusBackend
     for CommandStatusBackend<T, F>
 {
-    fn query_status(&mut self, timeout_ms: u64) -> Result<PrinterStatus, String> {
-        self.transport.write(&self.query)?;
-        match self.transport.wait_response(timeout_ms)? {
-            WaitOutcome::Response(bytes) => (self.decode)(&bytes),
-            WaitOutcome::Timeout => Err("status response timed out".into()),
-            WaitOutcome::Unavailable => Err("status response unavailable".into()),
-        }
+    fn query_status(
+        &mut self,
+        timeout: Duration,
+    ) -> TransportFuture<'_, Result<PrinterStatus, TransportError>> {
+        Box::pin(async move {
+            self.transport
+                .write(&self.query, WriteKind::Command)
+                .await?;
+            match self.transport.wait_response(timeout).await? {
+                WaitOutcome::Response(bytes) => (self.decode)(&bytes).map_err(|error| {
+                    TransportError::new(TransportErrorKind::InvalidConfiguration, error)
+                }),
+                WaitOutcome::Timeout => Err(TransportError::new(
+                    TransportErrorKind::Timeout,
+                    "status response timed out",
+                )),
+                WaitOutcome::Unavailable => Err(TransportError::new(
+                    TransportErrorKind::Unsupported,
+                    "status response unavailable",
+                )),
+            }
+        })
     }
 }
 
 pub struct FileTransport {
-    file: File,
+    file: tokio::fs::File,
     payload_limit: usize,
 }
 impl FileTransport {
-    pub fn open(path: impl AsRef<Path>, payload_limit: usize) -> Result<Self, String> {
-        let file = OpenOptions::new()
+    pub async fn open(
+        path: impl AsRef<Path>,
+        payload_limit: usize,
+    ) -> Result<Self, TransportError> {
+        if payload_limit == 0 {
+            return Err(TransportError::new(
+                TransportErrorKind::InvalidConfiguration,
+                "file payload limit must be positive",
+            ));
+        }
+        let file = tokio::fs::OpenOptions::new()
             .read(true)
             .write(true)
             .open(path)
-            .map_err(|error| error.to_string())?;
+            .await
+            .map_err(|error| io_error("file open", error))?;
         Ok(Self {
             file,
             payload_limit,
@@ -71,38 +231,69 @@ impl Transport for FileTransport {
     fn payload_limit(&self) -> usize {
         self.payload_limit
     }
-    fn subscribe_notifications(&mut self) -> Result<(), String> {
-        Ok(())
+    fn subscribe_notifications(
+        &mut self,
+    ) -> TransportFuture<'_, Result<NotificationSupport, TransportError>> {
+        Box::pin(async { Ok(NotificationSupport::Unavailable) })
     }
-    fn write(&mut self, bytes: &[u8]) -> Result<(), String> {
-        self.file
-            .write_all(bytes)
-            .and_then(|_| self.file.flush())
-            .map_err(|error| error.to_string())
+    fn write<'a>(
+        &'a mut self,
+        bytes: &'a [u8],
+        _: WriteKind,
+    ) -> TransportFuture<'a, Result<(), TransportError>> {
+        Box::pin(async move {
+            self.file
+                .write_all(bytes)
+                .await
+                .map_err(|error| io_error("file write", error))?;
+            self.file
+                .flush()
+                .await
+                .map_err(|error| io_error("file flush", error))
+        })
     }
-    fn delay_monotonic(&mut self, milliseconds: u64) {
-        std::thread::sleep(Duration::from_millis(milliseconds))
+    fn delay(&mut self, duration: Duration) -> TransportFuture<'_, ()> {
+        Box::pin(tokio::time::sleep(duration))
     }
-    fn wait_response(&mut self, _: u64) -> Result<WaitOutcome, String> {
-        Ok(WaitOutcome::Unavailable)
+    fn wait_response(
+        &mut self,
+        _: Duration,
+    ) -> TransportFuture<'_, Result<WaitOutcome, TransportError>> {
+        Box::pin(async { Ok(WaitOutcome::Unavailable) })
+    }
+    fn disconnect(&mut self) -> TransportFuture<'_, Result<(), TransportError>> {
+        Box::pin(async move {
+            self.file
+                .flush()
+                .await
+                .map_err(|error| io_error("file flush", error))
+        })
     }
 }
 
 pub struct TcpTransport {
-    stream: TcpStream,
+    stream: tokio::net::TcpStream,
     payload_limit: usize,
     response_limit: usize,
 }
 impl TcpTransport {
-    pub fn connect(
+    pub async fn connect(
         address: SocketAddr,
         payload_limit: usize,
         response_limit: usize,
-    ) -> Result<Self, String> {
-        let stream = TcpStream::connect(address).map_err(|error| error.to_string())?;
+    ) -> Result<Self, TransportError> {
+        if payload_limit == 0 || response_limit == 0 {
+            return Err(TransportError::new(
+                TransportErrorKind::InvalidConfiguration,
+                "TCP limits must be positive",
+            ));
+        }
+        let stream = tokio::net::TcpStream::connect(address)
+            .await
+            .map_err(|error| io_error("TCP connect", error))?;
         stream
             .set_nodelay(true)
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| io_error("TCP configuration", error))?;
         Ok(Self {
             stream,
             payload_limit,
@@ -114,38 +305,50 @@ impl Transport for TcpTransport {
     fn payload_limit(&self) -> usize {
         self.payload_limit
     }
-    fn subscribe_notifications(&mut self) -> Result<(), String> {
-        Ok(())
+    fn subscribe_notifications(
+        &mut self,
+    ) -> TransportFuture<'_, Result<NotificationSupport, TransportError>> {
+        Box::pin(async { Ok(NotificationSupport::Unavailable) })
     }
-    fn write(&mut self, bytes: &[u8]) -> Result<(), String> {
-        self.stream
-            .write_all(bytes)
-            .map_err(|error| error.to_string())
+    fn write<'a>(
+        &'a mut self,
+        bytes: &'a [u8],
+        _: WriteKind,
+    ) -> TransportFuture<'a, Result<(), TransportError>> {
+        Box::pin(async move {
+            self.stream
+                .write_all(bytes)
+                .await
+                .map_err(|error| io_error("TCP write", error))
+        })
     }
-    fn delay_monotonic(&mut self, milliseconds: u64) {
-        std::thread::sleep(Duration::from_millis(milliseconds))
+    fn delay(&mut self, duration: Duration) -> TransportFuture<'_, ()> {
+        Box::pin(tokio::time::sleep(duration))
     }
-    fn wait_response(&mut self, timeout_ms: u64) -> Result<WaitOutcome, String> {
-        self.stream
-            .set_read_timeout(Some(Duration::from_millis(timeout_ms)))
-            .map_err(|error| error.to_string())?;
-        let mut bytes = vec![0; self.response_limit.max(1)];
-        match self.stream.read(&mut bytes) {
-            Ok(0) => Ok(WaitOutcome::Unavailable),
-            Ok(length) => {
-                bytes.truncate(length);
-                Ok(WaitOutcome::Response(bytes))
+    fn wait_response(
+        &mut self,
+        timeout: Duration,
+    ) -> TransportFuture<'_, Result<WaitOutcome, TransportError>> {
+        Box::pin(async move {
+            let mut bytes = vec![0; self.response_limit];
+            match tokio::time::timeout(timeout, self.stream.read(&mut bytes)).await {
+                Err(_) => Ok(WaitOutcome::Timeout),
+                Ok(Ok(0)) => Ok(WaitOutcome::Unavailable),
+                Ok(Ok(length)) => {
+                    bytes.truncate(length);
+                    Ok(WaitOutcome::Response(bytes))
+                }
+                Ok(Err(error)) => Err(io_error("TCP read", error)),
             }
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
-                ) =>
-            {
-                Ok(WaitOutcome::Timeout)
-            }
-            Err(error) => Err(error.to_string()),
-        }
+        })
+    }
+    fn disconnect(&mut self) -> TransportFuture<'_, Result<(), TransportError>> {
+        Box::pin(async move {
+            self.stream
+                .shutdown()
+                .await
+                .map_err(|error| io_error("TCP shutdown", error))
+        })
     }
 }
 
@@ -171,57 +374,25 @@ pub mod serial {
         }
     }
     pub struct SerialTransport {
-        port: Box<dyn serialport::SerialPort>,
+        device: PersistentDevice,
         config: SerialConfig,
     }
-    impl SerialTransport {
-        /// Opens and configures a serial device with the default 115200 8-N-1 profile.
-        pub fn open(path: impl AsRef<Path>, payload_limit: usize) -> Result<Self, String> {
-            Self::open_configured(
-                path,
-                SerialConfig {
-                    payload_limit,
-                    ..Default::default()
-                },
-            )
-        }
-        pub fn open_configured(
-            path: impl AsRef<Path>,
-            config: SerialConfig,
-        ) -> Result<Self, String> {
-            let port = serialport::new(path.as_ref().to_string_lossy(), config.baud_rate)
-                .timeout(Duration::from_millis(config.timeout_ms))
-                .data_bits(serialport::DataBits::Eight)
-                .parity(serialport::Parity::None)
-                .stop_bits(serialport::StopBits::One)
-                .flow_control(serialport::FlowControl::None)
-                .open()
-                .map_err(|error| error.to_string())?;
-            Ok(Self { port, config })
-        }
+    struct SerialBackend {
+        port: Box<dyn serialport::SerialPort>,
+        response_limit: usize,
     }
-    impl Transport for SerialTransport {
-        fn payload_limit(&self) -> usize {
-            self.config.payload_limit
-        }
-        fn subscribe_notifications(&mut self) -> Result<(), String> {
-            Ok(())
-        }
+    impl BlockingIo for SerialBackend {
         fn write(&mut self, bytes: &[u8]) -> Result<(), String> {
-            self.port
-                .write_all(bytes)
-                .and_then(|_| self.port.flush())
+            std::io::Write::write_all(&mut self.port, bytes)
+                .and_then(|()| std::io::Write::flush(&mut self.port))
                 .map_err(|error| error.to_string())
         }
-        fn delay_monotonic(&mut self, milliseconds: u64) {
-            std::thread::sleep(Duration::from_millis(milliseconds))
-        }
-        fn wait_response(&mut self, timeout_ms: u64) -> Result<WaitOutcome, String> {
+        fn read(&mut self, timeout: Duration) -> Result<WaitOutcome, String> {
             self.port
-                .set_timeout(Duration::from_millis(timeout_ms))
+                .set_timeout(timeout)
                 .map_err(|error| error.to_string())?;
-            let mut bytes = vec![0; self.config.response_limit.max(1)];
-            match self.port.read(&mut bytes) {
+            let mut bytes = vec![0; self.response_limit];
+            match std::io::Read::read(&mut self.port, &mut bytes) {
                 Ok(0) => Ok(WaitOutcome::Unavailable),
                 Ok(length) => {
                     bytes.truncate(length);
@@ -237,6 +408,73 @@ pub mod serial {
                 }
                 Err(error) => Err(error.to_string()),
             }
+        }
+    }
+    impl SerialTransport {
+        /// Opens and configures a serial device with the default 115200 8-N-1 profile.
+        pub fn open(path: impl AsRef<Path>, payload_limit: usize) -> Result<Self, TransportError> {
+            Self::open_configured(
+                path,
+                SerialConfig {
+                    payload_limit,
+                    ..Default::default()
+                },
+            )
+        }
+        pub fn open_configured(
+            path: impl AsRef<Path>,
+            config: SerialConfig,
+        ) -> Result<Self, TransportError> {
+            if config.payload_limit == 0 || config.response_limit == 0 || config.timeout_ms == 0 {
+                return Err(TransportError::new(
+                    TransportErrorKind::InvalidConfiguration,
+                    "serial limits must be positive",
+                ));
+            }
+            let port = serialport::new(path.as_ref().to_string_lossy(), config.baud_rate)
+                .timeout(Duration::from_millis(config.timeout_ms))
+                .data_bits(serialport::DataBits::Eight)
+                .parity(serialport::Parity::None)
+                .stop_bits(serialport::StopBits::One)
+                .flow_control(serialport::FlowControl::None)
+                .open()
+                .map_err(|error| io_error("serial open", error))?;
+            Ok(Self {
+                device: PersistentDevice::spawn(SerialBackend {
+                    port,
+                    response_limit: config.response_limit,
+                }),
+                config,
+            })
+        }
+    }
+    impl Transport for SerialTransport {
+        fn payload_limit(&self) -> usize {
+            self.config.payload_limit
+        }
+        fn subscribe_notifications(
+            &mut self,
+        ) -> TransportFuture<'_, Result<NotificationSupport, TransportError>> {
+            Box::pin(async { Ok(NotificationSupport::Unavailable) })
+        }
+        fn write<'a>(
+            &'a mut self,
+            bytes: &'a [u8],
+            _: WriteKind,
+        ) -> TransportFuture<'a, Result<(), TransportError>> {
+            Box::pin(async move { self.device.write(bytes).await })
+        }
+        fn delay(&mut self, duration: Duration) -> TransportFuture<'_, ()> {
+            Box::pin(tokio::time::sleep(duration))
+        }
+        fn wait_response(
+            &mut self,
+            timeout: Duration,
+        ) -> TransportFuture<'_, Result<WaitOutcome, TransportError>> {
+            Box::pin(async move { self.device.read(timeout).await })
+        }
+        fn disconnect(&mut self) -> TransportFuture<'_, Result<(), TransportError>> {
+            Box::pin(async move { self.device.disconnect().await })
         }
     }
     #[derive(Debug, Clone)]
@@ -362,19 +600,36 @@ pub mod usb {
         fn discover_usb(&self) -> Result<Vec<DiscoveredPrinter>, String>;
     }
     pub struct UsbTransport<B> {
-        backend: B,
+        backend: std::sync::Arc<std::sync::Mutex<B>>,
+        device: PersistentDevice,
         payload_limit: usize,
         command_limit: usize,
+    }
+    struct UsbIo<B> {
+        backend: std::sync::Arc<std::sync::Mutex<B>>,
         response_limit: usize,
     }
-    impl<B> UsbTransport<B> {
+    impl<B: UsbBulkBackend + Send + 'static> BlockingIo for UsbIo<B> {
+        fn write(&mut self, bytes: &[u8]) -> Result<(), String> {
+            self.backend
+                .lock()
+                .map_err(|_| "USB backend lock failed".to_owned())?
+                .write_bulk(bytes)
+        }
+        fn read(&mut self, timeout: Duration) -> Result<WaitOutcome, String> {
+            let timeout_ms = u64::try_from(timeout.as_millis())
+                .unwrap_or(u64::MAX)
+                .max(1);
+            self.backend
+                .lock()
+                .map_err(|_| "USB backend lock failed".to_owned())?
+                .read_bulk(timeout_ms, self.response_limit)
+                .map(|value| value.map_or(WaitOutcome::Timeout, WaitOutcome::Response))
+        }
+    }
+    impl<B: UsbBulkBackend + Send + 'static> UsbTransport<B> {
         pub fn new(backend: B, payload_limit: usize, response_limit: usize) -> Self {
-            Self {
-                backend,
-                payload_limit,
-                command_limit: payload_limit,
-                response_limit,
-            }
+            Self::new_with_limits(backend, payload_limit, payload_limit, response_limit)
         }
         pub fn new_with_limits(
             backend: B,
@@ -382,64 +637,101 @@ pub mod usb {
             command_limit: usize,
             response_limit: usize,
         ) -> Self {
+            let backend = std::sync::Arc::new(std::sync::Mutex::new(backend));
+            let device = PersistentDevice::spawn(UsbIo {
+                backend: backend.clone(),
+                response_limit,
+            });
             Self {
                 backend,
+                device,
                 payload_limit,
                 command_limit,
-                response_limit,
             }
         }
-        pub fn backend(&self) -> &B {
-            &self.backend
+        pub fn backend(&self) -> std::sync::MutexGuard<'_, B> {
+            self.backend.lock().expect("USB backend lock poisoned")
         }
     }
-    impl<B: UsbPrinterClassBackend> UsbTransport<B> {
-        pub fn get_device_id(
+    impl<B: UsbBulkBackend + UsbPrinterClassBackend + Send + 'static> UsbTransport<B> {
+        pub async fn get_device_id(
             &mut self,
             timeout_ms: u64,
-        ) -> Result<Option<Ieee1284DeviceId>, String> {
+        ) -> Result<Option<Ieee1284DeviceId>, TransportError> {
             if timeout_ms == 0 {
-                return Err("USB Printer Class timeout must be positive".into());
+                return Err(TransportError::new(
+                    TransportErrorKind::InvalidConfiguration,
+                    "USB Printer Class timeout must be positive",
+                ));
             }
-            self.backend
-                .get_device_id_raw(timeout_ms, MAX_IEEE1284_DEVICE_ID_BYTES)?
-                .map(|data| parse_ieee1284_device_id(&data))
-                .transpose()
+            let backend = self.backend.clone();
+            tokio::task::spawn_blocking(move || {
+                backend
+                    .lock()
+                    .map_err(|_| "USB backend lock failed".to_owned())?
+                    .get_device_id_raw(timeout_ms, MAX_IEEE1284_DEVICE_ID_BYTES)
+            })
+            .await
+            .map_err(|_| TransportError::new(TransportErrorKind::Io, "USB worker failed"))?
+            .map_err(|error| io_error("USB device ID", error))?
+            .map(|data| parse_ieee1284_device_id(&data))
+            .transpose()
+            .map_err(|error| TransportError::new(TransportErrorKind::InvalidConfiguration, error))
         }
 
-        pub fn get_port_status(
+        pub async fn get_port_status(
             &mut self,
             timeout_ms: u64,
-        ) -> Result<Option<UsbPortStatus>, String> {
+        ) -> Result<Option<UsbPortStatus>, TransportError> {
             if timeout_ms == 0 {
-                return Err("USB Printer Class timeout must be positive".into());
+                return Err(TransportError::new(
+                    TransportErrorKind::InvalidConfiguration,
+                    "USB Printer Class timeout must be positive",
+                ));
             }
-            self.backend
-                .get_port_status_raw(timeout_ms)
-                .map(|value| value.map(parse_port_status))
+            let backend = self.backend.clone();
+            tokio::task::spawn_blocking(move || {
+                backend
+                    .lock()
+                    .map_err(|_| "USB backend lock failed".to_owned())?
+                    .get_port_status_raw(timeout_ms)
+            })
+            .await
+            .map_err(|_| TransportError::new(TransportErrorKind::Io, "USB worker failed"))?
+            .map(|value| value.map(parse_port_status))
+            .map_err(|error| io_error("USB port status", error))
         }
     }
-    impl<B: UsbBulkBackend> Transport for UsbTransport<B> {
+    impl<B: UsbBulkBackend + Send + 'static> Transport for UsbTransport<B> {
         fn payload_limit(&self) -> usize {
             self.payload_limit
         }
         fn command_limit(&self) -> usize {
             self.command_limit
         }
-        fn subscribe_notifications(&mut self) -> Result<(), String> {
-            Ok(())
+        fn subscribe_notifications(
+            &mut self,
+        ) -> TransportFuture<'_, Result<NotificationSupport, TransportError>> {
+            Box::pin(async { Ok(NotificationSupport::Unavailable) })
         }
-        fn write(&mut self, bytes: &[u8]) -> Result<(), String> {
-            self.backend.write_bulk(bytes)
+        fn write<'a>(
+            &'a mut self,
+            bytes: &'a [u8],
+            _: WriteKind,
+        ) -> TransportFuture<'a, Result<(), TransportError>> {
+            Box::pin(async move { self.device.write(bytes).await })
         }
-        fn delay_monotonic(&mut self, milliseconds: u64) {
-            std::thread::sleep(Duration::from_millis(milliseconds))
+        fn delay(&mut self, duration: Duration) -> TransportFuture<'_, ()> {
+            Box::pin(tokio::time::sleep(duration))
         }
-        fn wait_response(&mut self, timeout_ms: u64) -> Result<WaitOutcome, String> {
-            match self.backend.read_bulk(timeout_ms, self.response_limit)? {
-                Some(bytes) => Ok(WaitOutcome::Response(bytes)),
-                None => Ok(WaitOutcome::Timeout),
-            }
+        fn wait_response(
+            &mut self,
+            timeout: Duration,
+        ) -> TransportFuture<'_, Result<WaitOutcome, TransportError>> {
+            Box::pin(async move { self.device.read(timeout).await })
+        }
+        fn disconnect(&mut self) -> TransportFuture<'_, Result<(), TransportError>> {
+            Box::pin(async move { self.device.disconnect().await })
         }
     }
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -859,154 +1151,197 @@ pub mod ipp;
 pub mod ble {
     use super::*;
     use btleplug::api::{
-        Central, CharPropFlags, Manager as _, Peripheral as _, ScanFilter, WriteType,
+        Central, CharPropFlags, Characteristic, Manager as _, Peripheral as _, ScanFilter,
+        WriteType,
     };
-    use futures_util::StreamExt;
-    use std::future::Future;
-    use std::pin::Pin;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use futures_util::StreamExt as _;
+    use mb_printer_core::capabilities::{
+        BleGattCapabilities, BleWriteType, NotificationRequirement,
+    };
+    use std::num::NonZeroUsize;
     use tracing::Instrument as _;
-    pub trait BleGattBackend {
-        fn subscribe(&mut self) -> Result<bool, String>;
-        fn write_without_response(&mut self, bytes: &[u8]) -> Result<(), String>;
-        fn wait_notification(&mut self, timeout_ms: u64) -> Result<Option<Vec<u8>>, String>;
+
+    const NOTIFICATION_QUEUE_CAPACITY: usize = 32;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct BtleplugConnectOptions {
+        pub scan_timeout: Duration,
+        pub payload_limit: NonZeroUsize,
     }
-    pub trait BleDiscoveryBackend {
-        fn discover_ble(&self, timeout_ms: u64) -> Result<Vec<DiscoveredPrinter>, String>;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum NotificationState {
+        Unsupported,
+        Available,
+        Subscribed,
+        Disconnected,
     }
-    pub struct BleTransport<B> {
-        backend: B,
-        payload_limit: usize,
-        notifications: bool,
+
+    fn ble_error(kind: TransportErrorKind, message: &'static str) -> TransportError {
+        TransportError::new(kind, message)
     }
-    impl<B> BleTransport<B> {
-        pub fn new(backend: B, payload_limit: usize) -> Self {
-            Self {
-                backend,
-                payload_limit,
-                notifications: false,
-            }
+
+    fn validate_write_state(
+        state: NotificationState,
+        length: usize,
+        limit: NonZeroUsize,
+    ) -> Result<(), TransportError> {
+        if state == NotificationState::Disconnected {
+            return Err(ble_error(
+                TransportErrorKind::Disconnected,
+                "BLE transport is disconnected",
+            ));
         }
-        pub fn backend(&self) -> &B {
-            &self.backend
+        if length > limit.get() {
+            return Err(ble_error(
+                TransportErrorKind::InvalidConfiguration,
+                "BLE write exceeds the declared payload limit",
+            ));
         }
+        Ok(())
     }
-    impl<B: BleGattBackend> Transport for BleTransport<B> {
-        fn payload_limit(&self) -> usize {
-            self.payload_limit
-        }
-        fn subscribe_notifications(&mut self) -> Result<(), String> {
-            self.notifications = self.backend.subscribe()?;
-            Ok(())
-        }
-        fn write(&mut self, bytes: &[u8]) -> Result<(), String> {
-            self.backend.write_without_response(bytes)
-        }
-        fn delay_monotonic(&mut self, milliseconds: u64) {
-            std::thread::sleep(Duration::from_millis(milliseconds))
-        }
-        fn wait_response(&mut self, timeout_ms: u64) -> Result<WaitOutcome, String> {
-            if !self.notifications {
-                return Ok(WaitOutcome::Unavailable);
-            };
-            Ok(match self.backend.wait_notification(timeout_ms)? {
-                Some(bytes) => WaitOutcome::Response(bytes),
-                None => WaitOutcome::Timeout,
-            })
-        }
-    }
-    /// Injectable Tokio-native GATT boundary used by services and contract tests.
-    pub type AsyncBleFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, String>> + Send + 'a>>;
-    pub trait AsyncBleGattBackend: Send {
-        fn subscribe(&mut self) -> AsyncBleFuture<'_, bool>;
-        fn write_without_response<'a>(&'a mut self, bytes: &'a [u8]) -> AsyncBleFuture<'a, ()>;
-        fn wait_notification(&mut self, timeout_ms: u64) -> AsyncBleFuture<'_, Option<Vec<u8>>>;
-        fn disconnect(&mut self) -> AsyncBleFuture<'_, ()>;
-    }
-    /// Serializes all GATT effects and exposes notification availability explicitly.
-    pub struct AsyncBleTransport<B> {
-        backend: tokio::sync::Mutex<B>,
-        notifications: AtomicBool,
-        payload_limit: usize,
-    }
-    impl<B: AsyncBleGattBackend> AsyncBleTransport<B> {
-        pub fn new(backend: B, payload_limit: usize) -> Result<Self, String> {
-            if payload_limit == 0 {
-                return Err("BLE payload limit must be positive".into());
-            }
-            Ok(Self {
-                backend: tokio::sync::Mutex::new(backend),
-                notifications: AtomicBool::new(false),
-                payload_limit,
-            })
-        }
-        pub async fn subscribe_notifications(&self) -> Result<bool, String> {
-            let available = self.backend.lock().await.subscribe().await?;
-            self.notifications.store(available, Ordering::Release);
-            Ok(available)
-        }
-        pub async fn write(&self, bytes: &[u8]) -> Result<(), String> {
-            if bytes.len() > self.payload_limit {
-                return Err("BLE write exceeds declared payload limit".into());
-            }
-            self.backend
-                .lock()
-                .await
-                .write_without_response(bytes)
-                .await
-        }
-        pub async fn wait_notification(&self, timeout_ms: u64) -> Result<WaitOutcome, String> {
-            if !self.notifications.load(Ordering::Acquire) {
+
+    async fn wait_notification_state(
+        state: &mut NotificationState,
+        notifications: &mut Option<tokio::sync::mpsc::Receiver<Vec<u8>>>,
+        timeout: Duration,
+    ) -> Result<WaitOutcome, TransportError> {
+        match *state {
+            NotificationState::Unsupported | NotificationState::Available => {
                 return Ok(WaitOutcome::Unavailable);
             }
-            Ok(
-                match self
-                    .backend
-                    .lock()
-                    .await
-                    .wait_notification(timeout_ms)
-                    .await?
+            NotificationState::Disconnected => {
+                return Err(ble_error(
+                    TransportErrorKind::Disconnected,
+                    "BLE transport is disconnected",
+                ));
+            }
+            NotificationState::Subscribed => {}
+        }
+        let receiver = notifications
+            .as_mut()
+            .expect("subscribed notification state has a receiver");
+        match tokio::time::timeout(timeout, receiver.recv()).await {
+            Err(_) => Ok(WaitOutcome::Timeout),
+            Ok(Some(bytes)) => Ok(WaitOutcome::Response(bytes)),
+            Ok(None) => {
+                *state = NotificationState::Disconnected;
+                Err(ble_error(
+                    TransportErrorKind::Disconnected,
+                    "BLE notification stream ended",
+                ))
+            }
+        }
+    }
+
+    fn select_characteristics(
+        characteristics: &[Characteristic],
+        capabilities: &BleGattCapabilities,
+    ) -> Result<(Characteristic, Option<Characteristic>), TransportError> {
+        if capabilities.write_type != BleWriteType::WithoutResponse {
+            return Err(ble_error(
+                TransportErrorKind::InvalidConfiguration,
+                "BLE profile has an unsupported write type",
+            ));
+        }
+
+        let write = characteristics
+            .iter()
+            .find(|item| {
+                item.uuid == capabilities.write_characteristic
+                    && item
+                        .properties
+                        .contains(CharPropFlags::WRITE_WITHOUT_RESPONSE)
+            })
+            .cloned();
+        let write = match write {
+            Some(write) => write,
+            None if characteristics
+                .iter()
+                .any(|item| item.uuid == capabilities.write_characteristic) =>
+            {
+                return Err(ble_error(
+                    TransportErrorKind::InvalidConfiguration,
+                    "BLE write characteristic does not support write without response",
+                ));
+            }
+            None => {
+                return Err(ble_error(
+                    TransportErrorKind::Connection,
+                    "BLE write characteristic was not found",
+                ));
+            }
+        };
+
+        let notification = match &capabilities.notification {
+            None => None,
+            Some(profile) => match characteristics
+                .iter()
+                .find(|item| item.uuid == profile.characteristic)
+                .cloned()
+            {
+                Some(characteristic)
+                    if characteristic.properties.contains(CharPropFlags::NOTIFY) =>
                 {
-                    Some(bytes) => WaitOutcome::Response(bytes),
-                    None => WaitOutcome::Timeout,
-                },
-            )
-        }
-        pub async fn disconnect(&self) -> Result<(), String> {
-            self.backend.lock().await.disconnect().await
-        }
+                    Some(characteristic)
+                }
+                Some(_) => {
+                    return Err(ble_error(
+                        TransportErrorKind::InvalidConfiguration,
+                        "BLE notification characteristic does not support notifications",
+                    ));
+                }
+                None if profile.requirement == NotificationRequirement::Optional => None,
+                None => {
+                    return Err(ble_error(
+                        TransportErrorKind::Connection,
+                        "required BLE notification characteristic was not found",
+                    ));
+                }
+            },
+        };
+
+        Ok((write, notification))
     }
-    pub fn discover_btleplug(timeout_ms: u64) -> Result<Vec<DiscoveredPrinter>, String> {
-        let _ = timeout_ms;
-        Err("synchronous BLE discovery is unavailable; use discover_btleplug_async on the caller-owned Tokio runtime".into())
-    }
-    /// Async BLE discovery for applications that already own a Tokio runtime.
+
+    /// Async BLE discovery for applications that own the Tokio runtime.
     pub async fn discover_btleplug_async(
-        timeout_ms: u64,
-    ) -> Result<Vec<DiscoveredPrinter>, String> {
-        let manager = btleplug::platform::Manager::new()
-            .await
-            .map_err(|error| error.to_string())?;
-        let adapters = manager
-            .adapters()
-            .await
-            .map_err(|error| error.to_string())?;
+        scan_timeout: Duration,
+    ) -> Result<Vec<DiscoveredPrinter>, TransportError> {
+        let manager = btleplug::platform::Manager::new().await.map_err(|_| {
+            ble_error(
+                TransportErrorKind::Connection,
+                "could not initialize the BLE manager",
+            )
+        })?;
+        let adapters = manager.adapters().await.map_err(|_| {
+            ble_error(
+                TransportErrorKind::Connection,
+                "could not enumerate BLE adapters",
+            )
+        })?;
         let mut found = Vec::new();
         for adapter in adapters {
             adapter
                 .start_scan(ScanFilter::default())
                 .await
-                .map_err(|error| error.to_string())?;
-            tokio::time::sleep(Duration::from_millis(timeout_ms)).await;
-            for peripheral in adapter
-                .peripherals()
-                .await
-                .map_err(|error| error.to_string())?
-            {
-                let properties = peripheral
-                    .properties()
-                    .await
-                    .map_err(|error| error.to_string())?;
+                .map_err(|_| {
+                    ble_error(TransportErrorKind::Connection, "BLE scan could not start")
+                })?;
+            tokio::time::sleep(scan_timeout).await;
+            let peripherals = adapter.peripherals().await.map_err(|_| {
+                ble_error(
+                    TransportErrorKind::Connection,
+                    "could not enumerate BLE peripherals",
+                )
+            })?;
+            for peripheral in peripherals {
+                let properties = peripheral.properties().await.map_err(|_| {
+                    ble_error(
+                        TransportErrorKind::Connection,
+                        "could not read BLE peripheral properties",
+                    )
+                })?;
                 let address = peripheral.address().to_string();
                 found.push(DiscoveredPrinter {
                     transport: "ble",
@@ -1020,88 +1355,52 @@ pub mod ble {
         found.dedup_by(|left, right| left.endpoint == right.endpoint);
         Ok(found)
     }
-    pub struct BtleplugDiscovery;
-    impl BleDiscoveryBackend for BtleplugDiscovery {
-        fn discover_ble(&self, timeout_ms: u64) -> Result<Vec<DiscoveredPrinter>, String> {
-            discover_btleplug(timeout_ms)
-        }
-    }
-    /// Legacy synchronous backend retained for source compatibility. It can no
-    /// longer be constructed because libraries must not create hidden Tokio
-    /// runtimes; use `AsyncBtleplugTransport` instead.
-    pub struct BtleplugBackend;
-    impl BtleplugBackend {
-        pub fn connect(
-            _address: &str,
-            _write_uuid: Option<uuid::Uuid>,
-            _notify_uuid: Option<uuid::Uuid>,
-            _scan_timeout_ms: u64,
-        ) -> Result<Self, String> {
-            Err("synchronous BLE connection is unavailable; use AsyncBtleplugTransport::connect on the caller-owned Tokio runtime".into())
-        }
-    }
-    impl BleGattBackend for BtleplugBackend {
-        fn subscribe(&mut self) -> Result<bool, String> {
-            Err("synchronous BLE backend is unavailable".into())
-        }
-        fn write_without_response(&mut self, _bytes: &[u8]) -> Result<(), String> {
-            Err("synchronous BLE backend is unavailable".into())
-        }
-        fn wait_notification(&mut self, _timeout_ms: u64) -> Result<Option<Vec<u8>>, String> {
-            Err("synchronous BLE backend is unavailable".into())
-        }
-    }
-    pub type BtleplugTransport = BleTransport<BtleplugBackend>;
-    pub fn connect_btleplug(
-        address: &str,
-        write_uuid: Option<uuid::Uuid>,
-        notify_uuid: Option<uuid::Uuid>,
-        payload_limit: usize,
-        scan_timeout_ms: u64,
-    ) -> Result<BtleplugTransport, String> {
-        Ok(BleTransport::new(
-            BtleplugBackend::connect(address, write_uuid, notify_uuid, scan_timeout_ms)?,
-            payload_limit,
-        ))
-    }
-    /// Tokio-native BLE transport. It avoids creating or blocking an internal runtime.
-    pub struct AsyncBtleplugTransport {
+
+    /// A Tokio-native GATT transport configured exclusively from model capabilities.
+    pub struct BtleplugTransport {
         peripheral: btleplug::platform::Peripheral,
-        write: btleplug::api::Characteristic,
-        notify: Option<btleplug::api::Characteristic>,
-        notifications: tokio::sync::mpsc::Receiver<Vec<u8>>,
-        pub payload_limit: usize,
+        write: Characteristic,
+        notify: Option<Characteristic>,
+        notification_state: NotificationState,
+        notifications: Option<tokio::sync::mpsc::Receiver<Vec<u8>>>,
+        forwarding_task: Option<tokio::task::JoinHandle<()>>,
+        payload_limit: NonZeroUsize,
     }
-    impl AsyncBtleplugTransport {
+
+    impl BtleplugTransport {
         pub async fn connect(
             address: &str,
-            write_uuid: Option<uuid::Uuid>,
-            notify_uuid: Option<uuid::Uuid>,
-            payload_limit: usize,
-            scan_timeout_ms: u64,
-        ) -> Result<Self, String> {
-            if payload_limit == 0 {
-                return Err("BLE payload limit must be positive".into());
-            }
-            let manager = btleplug::platform::Manager::new()
-                .await
-                .map_err(|error| error.to_string())?;
-            let adapters = manager
-                .adapters()
-                .await
-                .map_err(|error| error.to_string())?;
+            capabilities: &BleGattCapabilities,
+            options: BtleplugConnectOptions,
+        ) -> Result<Self, TransportError> {
+            let manager = btleplug::platform::Manager::new().await.map_err(|_| {
+                ble_error(
+                    TransportErrorKind::Connection,
+                    "could not initialize the BLE manager",
+                )
+            })?;
+            let adapters = manager.adapters().await.map_err(|_| {
+                ble_error(
+                    TransportErrorKind::Connection,
+                    "could not enumerate BLE adapters",
+                )
+            })?;
             let mut selected = None;
             for adapter in adapters {
                 adapter
                     .start_scan(ScanFilter::default())
                     .await
-                    .map_err(|error| error.to_string())?;
-                tokio::time::sleep(Duration::from_millis(scan_timeout_ms)).await;
-                for peripheral in adapter
-                    .peripherals()
-                    .await
-                    .map_err(|error| error.to_string())?
-                {
+                    .map_err(|_| {
+                        ble_error(TransportErrorKind::Connection, "BLE scan could not start")
+                    })?;
+                tokio::time::sleep(options.scan_timeout).await;
+                let peripherals = adapter.peripherals().await.map_err(|_| {
+                    ble_error(
+                        TransportErrorKind::Connection,
+                        "could not enumerate BLE peripherals",
+                    )
+                })?;
+                for peripheral in peripherals {
                     if peripheral
                         .address()
                         .to_string()
@@ -1115,119 +1414,356 @@ pub mod ble {
                     break;
                 }
             }
-            let peripheral =
-                selected.ok_or_else(|| format!("BLE peripheral not found: {address}"))?;
-            if !peripheral
-                .is_connected()
-                .await
-                .map_err(|error| error.to_string())?
-            {
-                peripheral
-                    .connect()
-                    .await
-                    .map_err(|error| error.to_string())?;
+
+            let peripheral = selected.ok_or_else(|| {
+                ble_error(
+                    TransportErrorKind::Connection,
+                    "requested BLE peripheral was not found",
+                )
+            })?;
+            let connected = peripheral.is_connected().await.map_err(|_| {
+                ble_error(
+                    TransportErrorKind::Connection,
+                    "could not inspect BLE connection state",
+                )
+            })?;
+            if !connected {
+                peripheral.connect().await.map_err(|_| {
+                    ble_error(
+                        TransportErrorKind::Connection,
+                        "could not connect to BLE peripheral",
+                    )
+                })?;
             }
-            peripheral
-                .discover_services()
+            peripheral.discover_services().await.map_err(|_| {
+                ble_error(
+                    TransportErrorKind::Connection,
+                    "could not discover BLE services",
+                )
+            })?;
+
+            let characteristics: Vec<_> = peripheral.characteristics().into_iter().collect();
+            let (write, notify) = match select_characteristics(&characteristics, capabilities) {
+                Ok(selected) => selected,
+                Err(error) => {
+                    let _ = peripheral.disconnect().await;
+                    return Err(error);
+                }
+            };
+            let notification_state = if notify.is_some() {
+                NotificationState::Available
+            } else {
+                NotificationState::Unsupported
+            };
+
+            Ok(Self {
+                peripheral,
+                write,
+                notify,
+                notification_state,
+                notifications: None,
+                forwarding_task: None,
+                payload_limit: options.payload_limit,
+            })
+        }
+
+        async fn subscribe_inner(&mut self) -> Result<NotificationSupport, TransportError> {
+            match self.notification_state {
+                NotificationState::Unsupported => return Ok(NotificationSupport::Unavailable),
+                NotificationState::Subscribed => return Ok(NotificationSupport::Subscribed),
+                NotificationState::Disconnected => {
+                    return Err(ble_error(
+                        TransportErrorKind::Disconnected,
+                        "BLE transport is disconnected",
+                    ));
+                }
+                NotificationState::Available => {}
+            }
+
+            let characteristic = self
+                .notify
+                .as_ref()
+                .expect("available notification state has a characteristic")
+                .clone();
+            let mut stream = self.peripheral.notifications().await.map_err(|_| {
+                ble_error(
+                    TransportErrorKind::Connection,
+                    "could not open BLE notification stream",
+                )
+            })?;
+            self.peripheral
+                .subscribe(&characteristic)
                 .await
-                .map_err(|error| error.to_string())?;
-            let characteristics = peripheral.characteristics();
-            let write = characteristics
-                .iter()
-                .find(|item| {
-                    write_uuid.map_or(
-                        item.properties.intersects(
-                            CharPropFlags::WRITE_WITHOUT_RESPONSE | CharPropFlags::WRITE,
-                        ),
-                        |expected| item.uuid == expected,
+                .map_err(|_| {
+                    ble_error(
+                        TransportErrorKind::Connection,
+                        "could not subscribe to BLE notifications",
                     )
-                })
-                .cloned()
-                .ok_or_else(|| "BLE write characteristic not found".to_owned())?;
-            let notify = characteristics
-                .iter()
-                .find(|item| {
-                    notify_uuid.map_or(
-                        item.properties.contains(CharPropFlags::NOTIFY),
-                        |expected| item.uuid == expected,
-                    )
-                })
-                .cloned();
-            let mut stream = peripheral
-                .notifications()
-                .await
-                .map_err(|error| error.to_string())?;
-            let (sender, notifications) = tokio::sync::mpsc::channel(32);
-            tokio::spawn(
+                })?;
+
+            let expected_uuid = characteristic.uuid;
+            let (sender, receiver) = tokio::sync::mpsc::channel(NOTIFICATION_QUEUE_CAPACITY);
+            let task = tokio::spawn(
                 async move {
                     while let Some(notification) = stream.next().await {
-                        if sender.send(notification.value).await.is_err() {
+                        if notification.uuid == expected_uuid
+                            && sender.send(notification.value).await.is_err()
+                        {
                             break;
                         }
                     }
                 }
                 .instrument(tracing::Span::current()),
             );
-            Ok(Self {
-                peripheral,
-                write,
-                notify,
-                notifications,
-                payload_limit,
-            })
+            self.notifications = Some(receiver);
+            self.forwarding_task = Some(task);
+            self.notification_state = NotificationState::Subscribed;
+            Ok(NotificationSupport::Subscribed)
         }
-        pub async fn subscribe_notifications(&self) -> Result<bool, String> {
-            let Some(characteristic) = &self.notify else {
-                return Ok(false);
-            };
-            self.peripheral
-                .subscribe(characteristic)
-                .await
-                .map_err(|error| error.to_string())?;
-            Ok(true)
-        }
-        pub async fn write(&self, bytes: &[u8]) -> Result<(), String> {
-            if bytes.len() > self.payload_limit {
-                return Err("BLE write exceeds declared payload limit".into());
-            }
+
+        async fn write_inner(&mut self, bytes: &[u8]) -> Result<(), TransportError> {
+            validate_write_state(self.notification_state, bytes.len(), self.payload_limit)?;
             self.peripheral
                 .write(&self.write, bytes, WriteType::WithoutResponse)
                 .await
-                .map_err(|error| error.to_string())
+                .map_err(|_| ble_error(TransportErrorKind::Io, "BLE write failed"))
         }
-        pub async fn wait_notification(
+
+        async fn wait_inner(&mut self, timeout: Duration) -> Result<WaitOutcome, TransportError> {
+            wait_notification_state(
+                &mut self.notification_state,
+                &mut self.notifications,
+                timeout,
+            )
+            .await
+        }
+
+        async fn disconnect_inner(&mut self) -> Result<(), TransportError> {
+            if self.notification_state == NotificationState::Disconnected {
+                return Ok(());
+            }
+            self.notification_state = NotificationState::Disconnected;
+            if let Some(task) = self.forwarding_task.take() {
+                task.abort();
+            }
+            self.notifications.take();
+            self.peripheral.disconnect().await.map_err(|_| {
+                ble_error(
+                    TransportErrorKind::Connection,
+                    "could not disconnect BLE peripheral",
+                )
+            })
+        }
+    }
+
+    impl Transport for BtleplugTransport {
+        fn payload_limit(&self) -> usize {
+            self.payload_limit.get()
+        }
+
+        fn subscribe_notifications(
             &mut self,
-            timeout_ms: u64,
-        ) -> Result<Option<Vec<u8>>, String> {
-            match tokio::time::timeout(Duration::from_millis(timeout_ms), self.notifications.recv())
-                .await
-            {
-                Ok(value) => Ok(value),
-                Err(_) => Ok(None),
+        ) -> TransportFuture<'_, Result<NotificationSupport, TransportError>> {
+            Box::pin(self.subscribe_inner())
+        }
+
+        fn write<'a>(
+            &'a mut self,
+            bytes: &'a [u8],
+            _kind: WriteKind,
+        ) -> TransportFuture<'a, Result<(), TransportError>> {
+            Box::pin(self.write_inner(bytes))
+        }
+
+        fn wait_response(
+            &mut self,
+            timeout: Duration,
+        ) -> TransportFuture<'_, Result<WaitOutcome, TransportError>> {
+            Box::pin(self.wait_inner(timeout))
+        }
+
+        fn delay(&mut self, duration: Duration) -> TransportFuture<'_, ()> {
+            Box::pin(tokio::time::sleep(duration))
+        }
+
+        fn disconnect(&mut self) -> TransportFuture<'_, Result<(), TransportError>> {
+            Box::pin(self.disconnect_inner())
+        }
+    }
+
+    impl Drop for BtleplugTransport {
+        fn drop(&mut self) {
+            self.notification_state = NotificationState::Disconnected;
+            if let Some(task) = self.forwarding_task.take() {
+                task.abort();
+            }
+            self.notifications.take();
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use mb_printer_core::capabilities::{BleNotification, BleWriteType};
+        use std::collections::BTreeSet;
+        use uuid::Uuid;
+
+        const FF02: &str = "0000ff02-0000-1000-8000-00805f9b34fb";
+        const FF03: &str = "0000ff03-0000-1000-8000-00805f9b34fb";
+
+        fn characteristic(uuid: &str, properties: CharPropFlags) -> Characteristic {
+            Characteristic {
+                uuid: Uuid::parse_str(uuid).unwrap(),
+                service_uuid: Uuid::nil(),
+                properties,
+                descriptors: BTreeSet::new(),
             }
         }
-        pub async fn disconnect(&self) -> Result<(), String> {
-            self.peripheral
-                .disconnect()
+
+        fn profile(requirement: NotificationRequirement) -> BleGattCapabilities {
+            BleGattCapabilities {
+                write_characteristic: Uuid::parse_str(FF02).unwrap(),
+                write_type: BleWriteType::WithoutResponse,
+                notification: Some(BleNotification {
+                    characteristic: Uuid::parse_str(FF03).unwrap(),
+                    requirement,
+                }),
+            }
+        }
+
+        #[test]
+        fn characteristic_selection_requires_write_without_response() {
+            let only_write = characteristic(FF02, CharPropFlags::WRITE);
+            let error =
+                select_characteristics(&[only_write], &profile(NotificationRequirement::Optional))
+                    .unwrap_err();
+            assert_eq!(error.kind, TransportErrorKind::InvalidConfiguration);
+
+            let correct = characteristic(FF02, CharPropFlags::WRITE_WITHOUT_RESPONSE);
+            let (write, notify) =
+                select_characteristics(&[correct], &profile(NotificationRequirement::Optional))
+                    .unwrap();
+            assert_eq!(write.uuid, Uuid::parse_str(FF02).unwrap());
+            assert!(notify.is_none());
+        }
+
+        #[test]
+        fn optional_missing_notification_is_unavailable_but_required_is_an_error() {
+            let write = characteristic(FF02, CharPropFlags::WRITE_WITHOUT_RESPONSE);
+            let (_, notify) = select_characteristics(
+                std::slice::from_ref(&write),
+                &profile(NotificationRequirement::Optional),
+            )
+            .unwrap();
+            assert!(notify.is_none());
+
+            let error =
+                select_characteristics(&[write], &profile(NotificationRequirement::Required))
+                    .unwrap_err();
+            assert_eq!(error.kind, TransportErrorKind::Connection);
+        }
+
+        #[tokio::test]
+        async fn notification_state_distinguishes_unavailable_timeout_response_and_disconnect() {
+            let mut unsupported = NotificationState::Unsupported;
+            assert_eq!(
+                wait_notification_state(&mut unsupported, &mut None, Duration::ZERO)
+                    .await
+                    .unwrap(),
+                WaitOutcome::Unavailable
+            );
+
+            let (sender, receiver) = tokio::sync::mpsc::channel(NOTIFICATION_QUEUE_CAPACITY);
+            let mut notifications = Some(receiver);
+            let mut subscribed = NotificationState::Subscribed;
+            sender.send(vec![9]).await.unwrap();
+            assert_eq!(
+                wait_notification_state(
+                    &mut subscribed,
+                    &mut notifications,
+                    Duration::from_secs(1),
+                )
                 .await
-                .map_err(|error| error.to_string())
+                .unwrap(),
+                WaitOutcome::Response(vec![9])
+            );
+            assert_eq!(
+                wait_notification_state(&mut subscribed, &mut notifications, Duration::ZERO)
+                    .await
+                    .unwrap(),
+                WaitOutcome::Timeout
+            );
+            drop(sender);
+            assert!(
+                wait_notification_state(
+                    &mut subscribed,
+                    &mut notifications,
+                    Duration::from_secs(1),
+                )
+                .await
+                .is_err()
+            );
+            assert_eq!(subscribed, NotificationState::Disconnected);
+        }
+
+        #[test]
+        fn write_validation_rejects_oversize_and_disconnected_before_platform_io() {
+            let limit = NonZeroUsize::new(20).unwrap();
+            assert!(validate_write_state(NotificationState::Available, 20, limit).is_ok());
+            assert_eq!(
+                validate_write_state(NotificationState::Available, 21, limit)
+                    .unwrap_err()
+                    .kind,
+                TransportErrorKind::InvalidConfiguration
+            );
+            assert_eq!(
+                validate_write_state(NotificationState::Disconnected, 1, limit)
+                    .unwrap_err()
+                    .kind,
+                TransportErrorKind::Disconnected
+            );
+        }
+
+        #[test]
+        fn configured_notification_must_have_notify_property() {
+            let write = characteristic(FF02, CharPropFlags::WRITE_WITHOUT_RESPONSE);
+            let wrong_notify = characteristic(FF03, CharPropFlags::READ);
+            let error = select_characteristics(
+                &[write, wrong_notify],
+                &profile(NotificationRequirement::Optional),
+            )
+            .unwrap_err();
+            assert_eq!(error.kind, TransportErrorKind::InvalidConfiguration);
+        }
+
+        #[test]
+        fn exact_ff02_ff03_profile_selects_both_characteristics() {
+            let unrelated =
+                characteristic("00002a00-0000-1000-8000-00805f9b34fb", CharPropFlags::WRITE);
+            let write = characteristic(FF02, CharPropFlags::WRITE_WITHOUT_RESPONSE);
+            let notify = characteristic(FF03, CharPropFlags::NOTIFY);
+            let (selected_write, selected_notify) = select_characteristics(
+                &[unrelated, write.clone(), notify.clone()],
+                &profile(NotificationRequirement::Optional),
+            )
+            .unwrap();
+            assert_eq!(selected_write, write);
+            assert_eq!(selected_notify, Some(notify));
         }
     }
 }
-
 #[cfg(feature = "wifi")]
 pub mod wifi {
-    use crate::Transport;
+    use crate::{Transport, TransportFuture, WriteKind};
     use mb_printer_core::ipp::{self as ipp_codec, Limits as IppLimits, ValueData as IppValueData};
-    use mb_printer_core::protocol::brother::wifi::{
-        self as core_wifi, WirelessSettings as TypedWirelessSettings,
-    };
+    use mb_printer_core::protocol::brother::wifi as core_wifi;
     pub use mb_printer_core::protocol::brother::wifi::{
         AccessPoint, PJL_FOOTER, PJL_HEADER, REBOOT_COMMAND, WirelessAuthentication,
-        WirelessEncryption, WirelessField, encode_ssid, ip_address_command, parse_access_points,
-        parse_authentication, parse_boolean_field, parse_encryption, parse_ip_address,
-        parse_oid_value, parse_wifi_status, wifi_scan_result_command, wifi_scan_start_command,
-        wifi_status_command, wireless_scan_plan, wireless_status_plan, xor_password,
+        WirelessEncryption, WirelessField, WirelessSettings, encode_ssid, ip_address_command,
+        parse_access_points, parse_authentication, parse_boolean_field, parse_encryption,
+        parse_ip_address, parse_oid_value, parse_wifi_status, wifi_scan_result_command,
+        wifi_scan_start_command, wifi_status_command, wireless_scan_plan, wireless_status_plan,
+        xor_password,
     };
     use std::io::{Read, Write};
     use std::net::{TcpStream, ToSocketAddrs};
@@ -1247,7 +1783,10 @@ pub mod wifi {
         }
     }
     pub trait WifiProvisioner {
-        fn provision(&mut self, credentials: &WifiCredentials) -> Result<(), String>;
+        fn provision<'a>(
+            &'a mut self,
+            credentials: &'a WifiCredentials,
+        ) -> TransportFuture<'a, Result<(), String>>;
     }
     pub use super::ipp::{IppEndpoint, IppScheme};
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1410,45 +1949,6 @@ pub mod wifi {
         }
         Ok(status)
     }
-    /// String-valued compatibility adapter for the original native API.
-    /// New callers should construct the typed core `WirelessSettings` directly.
-    #[derive(Clone)]
-    pub struct WirelessSettings {
-        pub ssid: String,
-        pub password: String,
-        pub encryption: String,
-        pub authentication: String,
-        pub infrastructure: bool,
-        pub wireless_direct: bool,
-        pub reboot: bool,
-    }
-    impl std::fmt::Debug for WirelessSettings {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.debug_struct("WirelessSettings")
-                .field("ssid", &self.ssid)
-                .field("password", &"[REDACTED]")
-                .field("encryption", &self.encryption)
-                .field("authentication", &self.authentication)
-                .finish_non_exhaustive()
-        }
-    }
-    impl WirelessSettings {
-        pub fn command(&self) -> Result<Vec<u8>, String> {
-            TypedWirelessSettings {
-                ssid: self.ssid.clone(),
-                password: self.password.clone(),
-                encryption: WirelessEncryption::try_from(self.encryption.as_str())
-                    .map_err(|error| error.to_string())?,
-                authentication: WirelessAuthentication::try_from(self.authentication.as_str())
-                    .map_err(|error| error.to_string())?,
-                infrastructure: self.infrastructure,
-                wireless_direct: self.wireless_direct,
-                reboot: self.reboot,
-            }
-            .command()
-            .map_err(|error| error.to_string())
-        }
-    }
     pub fn inquire_command(oid: &str) -> Result<Vec<u8>, String> {
         core_wifi::inquire_command(oid).map_err(|error| error.to_string())
     }
@@ -1457,18 +1957,27 @@ pub mod wifi {
         pub reboot: bool,
     }
     impl<T: Transport> WifiProvisioner for BrotherWifiProvisioner<T> {
-        fn provision(&mut self, credentials: &WifiCredentials) -> Result<(), String> {
-            let command = WirelessSettings {
-                ssid: credentials.ssid.clone(),
-                password: credentials.password.clone(),
-                encryption: "tkip-aes".into(),
-                authentication: "wpa-psk".into(),
-                infrastructure: true,
-                wireless_direct: false,
-                reboot: self.reboot,
-            }
-            .command()?;
-            self.transport.write(&command)
+        fn provision<'a>(
+            &'a mut self,
+            credentials: &'a WifiCredentials,
+        ) -> TransportFuture<'a, Result<(), String>> {
+            Box::pin(async move {
+                let command = WirelessSettings {
+                    ssid: credentials.ssid.clone(),
+                    password: credentials.password.clone(),
+                    encryption: WirelessEncryption::TkipAes,
+                    authentication: WirelessAuthentication::WpaPsk,
+                    infrastructure: true,
+                    wireless_direct: false,
+                    reboot: self.reboot,
+                }
+                .command()
+                .map_err(|error| error.to_string())?;
+                self.transport
+                    .write(&command, WriteKind::Command)
+                    .await
+                    .map_err(|error| error.to_string())
+            })
         }
     }
 }
@@ -1552,10 +2061,60 @@ pub mod rfcomm {
             })
     }
     pub struct RfcommTransport {
-        inner: FileTransport,
-        response_limit: usize,
+        device: PersistentDevice,
+        payload_limit: usize,
         pub address: String,
         pub channel: u8,
+    }
+    struct RfcommBackend {
+        file: File,
+        response_limit: usize,
+    }
+    impl BlockingIo for RfcommBackend {
+        fn write(&mut self, bytes: &[u8]) -> Result<(), String> {
+            std::io::Write::write_all(&mut self.file, bytes).map_err(|error| error.to_string())
+        }
+        fn read(&mut self, timeout: Duration) -> Result<WaitOutcome, String> {
+            let mut descriptor = libc::pollfd {
+                fd: std::os::fd::AsRawFd::as_raw_fd(&self.file),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            let timeout_ms = i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX);
+            // SAFETY: descriptor points to one initialized pollfd for the call.
+            let ready = unsafe { libc::poll(&mut descriptor, 1, timeout_ms) };
+            if ready < 0 {
+                return Err(std::io::Error::last_os_error().to_string());
+            }
+            if ready == 0 {
+                return Ok(WaitOutcome::Timeout);
+            }
+            if descriptor.revents & libc::POLLNVAL != 0 {
+                return Err("RFCOMM socket is not valid".into());
+            }
+            if descriptor.revents & (libc::POLLERR | libc::POLLHUP) != 0
+                && descriptor.revents & libc::POLLIN == 0
+            {
+                return Ok(WaitOutcome::Unavailable);
+            }
+            let mut bytes = vec![0; self.response_limit];
+            match self.file.read(&mut bytes) {
+                Ok(0) => Ok(WaitOutcome::Unavailable),
+                Ok(length) => {
+                    bytes.truncate(length);
+                    Ok(WaitOutcome::Response(bytes))
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                    ) =>
+                {
+                    Ok(WaitOutcome::Timeout)
+                }
+                Err(error) => Err(error.to_string()),
+            }
+        }
     }
     impl RfcommTransport {
         /// Open a Linux RFCOMM stream directly without creating a privileged
@@ -1617,12 +2176,15 @@ pub mod rfcomm {
                 return Err(std::io::Error::last_os_error().to_string());
             }
             let file = File::from(descriptor);
+            if payload_limit == 0 {
+                return Err("RFCOMM payload limit must be positive".into());
+            }
             Ok(Self {
-                inner: FileTransport {
+                device: PersistentDevice::spawn(RfcommBackend {
                     file,
-                    payload_limit,
-                },
-                response_limit: 64,
+                    response_limit: 64,
+                }),
+                payload_limit,
                 address: address.to_owned(),
                 channel,
             })
@@ -1630,58 +2192,31 @@ pub mod rfcomm {
     }
     impl Transport for RfcommTransport {
         fn payload_limit(&self) -> usize {
-            self.inner.payload_limit()
+            self.payload_limit
         }
-        fn subscribe_notifications(&mut self) -> Result<(), String> {
-            self.inner.subscribe_notifications()
+        fn subscribe_notifications(
+            &mut self,
+        ) -> TransportFuture<'_, Result<NotificationSupport, TransportError>> {
+            Box::pin(async { Ok(NotificationSupport::Unavailable) })
         }
-        fn write(&mut self, bytes: &[u8]) -> Result<(), String> {
-            self.inner.write(bytes)
+        fn write<'a>(
+            &'a mut self,
+            bytes: &'a [u8],
+            _: WriteKind,
+        ) -> TransportFuture<'a, Result<(), TransportError>> {
+            Box::pin(async move { self.device.write(bytes).await })
         }
-        fn delay_monotonic(&mut self, milliseconds: u64) {
-            self.inner.delay_monotonic(milliseconds)
+        fn delay(&mut self, duration: Duration) -> TransportFuture<'_, ()> {
+            Box::pin(tokio::time::sleep(duration))
         }
-        fn wait_response(&mut self, timeout_ms: u64) -> Result<WaitOutcome, String> {
-            let mut descriptor = libc::pollfd {
-                fd: std::os::fd::AsRawFd::as_raw_fd(&self.inner.file),
-                events: libc::POLLIN,
-                revents: 0,
-            };
-            let timeout_ms = i32::try_from(timeout_ms).unwrap_or(i32::MAX);
-            // SAFETY: descriptor points to one initialized pollfd for the
-            // duration of the call.
-            let ready = unsafe { libc::poll(&mut descriptor, 1, timeout_ms) };
-            if ready < 0 {
-                return Err(std::io::Error::last_os_error().to_string());
-            }
-            if ready == 0 {
-                return Ok(WaitOutcome::Timeout);
-            }
-            if descriptor.revents & libc::POLLNVAL != 0 {
-                return Err("RFCOMM socket is not valid".into());
-            }
-            if descriptor.revents & (libc::POLLERR | libc::POLLHUP) != 0
-                && descriptor.revents & libc::POLLIN == 0
-            {
-                return Ok(WaitOutcome::Unavailable);
-            }
-            let mut bytes = vec![0; self.response_limit.max(1)];
-            match self.inner.file.read(&mut bytes) {
-                Ok(0) => Ok(WaitOutcome::Unavailable),
-                Ok(length) => {
-                    bytes.truncate(length);
-                    Ok(WaitOutcome::Response(bytes))
-                }
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
-                    ) =>
-                {
-                    Ok(WaitOutcome::Timeout)
-                }
-                Err(error) => Err(error.to_string()),
-            }
+        fn wait_response(
+            &mut self,
+            timeout: Duration,
+        ) -> TransportFuture<'_, Result<WaitOutcome, TransportError>> {
+            Box::pin(async move { self.device.read(timeout).await })
+        }
+        fn disconnect(&mut self) -> TransportFuture<'_, Result<(), TransportError>> {
+            Box::pin(async move { self.device.disconnect().await })
         }
     }
 }

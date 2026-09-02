@@ -30,12 +30,15 @@ const sdk = require("@makersbrain/printer-sdk/node");
 const errors = JSON.parse(sdk.validateDocument(documentJson));
 ```
 
-`@makersbrain/printer-sdk/adapters` exports thin `WebBluetoothTransport` and
-`WebUsbTransport` wrappers plus the transport-independent plan executor. Device
-discovery, permission prompts, opening, and interface claiming remain application
-responsibilities. WebUSB exposes independent atomic-command and physical-raster
-limits so a bulk endpoint can retain complete commands while chunking raster
-data to its qualified packet size.
+`@makersbrain/printer-sdk/adapters` exports thin `WebBluetoothTransport`,
+`WebUsbTransport`, and `WebSerialTransport` I/O wrappers. Plan execution is the
+Promise-based `executePlan(planJson, transport, timing, signal, onProgress)`
+export from the WebAssembly package and uses the same Rust executor as native
+clients. Device discovery, permission prompts, opening, and interface claiming
+remain application responsibilities. WebUSB exposes independent atomic-command
+and physical-raster limits so a bulk endpoint can retain complete commands while
+chunking raster data to its qualified packet size. Web Bluetooth requires
+write-without-response and treats the notification characteristic as optional.
 
 Within this repository, editor integration tests may use the stable generated
 entrypoint `mb-printer-sdk/crates/mb-printer-wasm/pkg/web/mb_printer_wasm.js`

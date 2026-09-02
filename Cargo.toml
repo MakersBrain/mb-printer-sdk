@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 [workspace]
-members = ["crates/mb-printer-agent", "crates/mb-printer-agent-proto", "crates/mb-printer-core", "crates/mb-printer-native", "crates/mb-printer-wasm"]
+members = ["crates/mb-printer-agent", "crates/mb-printer-agent-proto", "crates/mb-printer-core", "crates/mb-printer-executor", "crates/mb-printer-native", "crates/mb-printer-wasm"]
 resolver = "2"
 
 [workspace.package]

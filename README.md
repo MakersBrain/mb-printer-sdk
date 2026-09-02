@@ -2,8 +2,25 @@
 # Makers' Brain printer SDK
 
 Deterministic Rust foundations for `.mb-label.json` v4 documents and thermal
-printer protocol execution. The workspace separates portable core logic,
-native action execution, and browser/WASM bindings.
+printer protocol execution. The workspace has four explicit layers:
+
+- `mb-printer-core` owns printer models, BLE profiles, rendering, and protocol plans.
+- `mb-printer-executor` owns the runtime-independent asynchronous transport
+  contract and the single plan executor.
+- `mb-printer-native` supplies Tokio-native BLE, TCP, USB, serial, and file
+  transports plus an optional native-only blocking facade.
+- `mb-printer-wasm` bridges JavaScript transports into that same Rust executor;
+  its TypeScript adapters contain browser I/O only.
+
+Async execution is canonical. Applications own the Tokio runtime and call
+`mb_printer_executor::execute(&plan, &mut transport).await`; the SDK never
+creates a hidden or nested runtime. The optional blocking facade instead owns
+one dedicated worker runtime. Cancellation never retries a write or a plan:
+reconnect and retry decisions always belong to the caller.
+
+Catalogue models own their BLE GATT profile. BLE uses the declared FF02
+characteristic with write-without-response only; an FF03 notification
+characteristic declared optional may be absent without making connection fail.
 
 The portable rendering slice uses integer micrometre-to-dot conversion,
 deterministic bilevel dithering, raster rotation/head fitting, shapes, bitmap

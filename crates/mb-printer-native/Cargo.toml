@@ -16,19 +16,21 @@ categories = ["hardware-support"]
 include = ["/src/**", "/tests/**", "/Cargo.toml", "/README.md", "/LICENSE"]
 [features]
 default = []
+blocking = []
 brother-tools = ["dep:serde_json"]
 bluetooth-rfcomm = ["dep:libc"]
 serial = ["dep:serialport"]
 usb = ["dep:rusb"]
-ble = ["dep:btleplug", "dep:futures-util", "dep:tokio", "dep:uuid"]
-ble-vendored-dbus = ["ble", "dep:dbus"]
-ipp = ["dep:futures-util", "dep:reqwest", "dep:tokio"]
-snmp = ["dep:tokio"]
+ble = ["dep:btleplug", "dep:futures-util", "dep:uuid", "dep:dbus"]
+ble-vendored-dbus = ["ble"]
+ipp = ["dep:futures-util", "dep:reqwest"]
+snmp = []
 wifi = ["ipp"]
 dns-sd = ["wifi", "dep:mdns-sd"]
 native-input = []
 [dependencies]
 mb-printer-core = { version = "=0.1.0", path = "../mb-printer-core" }
+mb-printer-executor = { version = "=0.1.0", path = "../mb-printer-executor" }
 thiserror.workspace = true
 sha2.workspace = true
 tracing.workspace = true
@@ -38,7 +40,7 @@ btleplug = { version = "0.11", optional = true }
 dbus = { version = "0.9", features = ["vendored"], optional = true }
 futures-util = { version = "0.3", optional = true }
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "stream"], optional = true }
-tokio = { version = "1", features = ["rt-multi-thread", "time", "sync", "net"], optional = true }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "time", "sync", "net", "fs", "io-util", "macros"] }
 uuid = { version = "1", optional = true }
 libc = { version = "0.2", optional = true }
 mdns-sd = { version = "0.21", optional = true }

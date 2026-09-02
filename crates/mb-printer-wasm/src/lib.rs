@@ -7,6 +7,9 @@ use mb_printer_core::{
 use std::collections::BTreeMap;
 use std::num::NonZeroU16;
 
+#[cfg(target_arch = "wasm32")]
+mod transport;
+
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SheetApiError {
@@ -948,7 +951,151 @@ fn validate_continuous_document<'a>(
 }
 #[cfg(target_arch = "wasm32")]
 mod bindings {
+    use mb_printer_core::protocol::Plan;
+    use mb_printer_executor::{
+        Cancellation, ExecuteError, ExecutionOptions, NeverCancelled, Progress, ReferenceTiming,
+        execute_with_options,
+    };
+    use wasm_bindgen::JsCast;
     use wasm_bindgen::prelude::*;
+
+    fn execution_request_error(code: &'static str, message: &str) -> JsValue {
+        let error = js_sys::Error::new(message);
+        let _ = js_sys::Reflect::set(
+            error.as_ref(),
+            &JsValue::from_str("code"),
+            &JsValue::from_str(code),
+        );
+        error.into()
+    }
+
+    fn set(object: &js_sys::Object, name: &str, value: &JsValue) {
+        let _ = js_sys::Reflect::set(object, &JsValue::from_str(name), value);
+    }
+
+    fn progress_value(progress: &Progress) -> JsValue {
+        let value = js_sys::Object::new();
+        set(
+            &value,
+            "lastCompletedAction",
+            &JsValue::from_f64(
+                progress
+                    .last_completed_action
+                    .map_or(-1.0, |action| action as f64),
+            ),
+        );
+        set(
+            &value,
+            "bytesWritten",
+            &JsValue::from_f64(progress.bytes_written as f64),
+        );
+        set(
+            &value,
+            "potentiallyAcceptedWrite",
+            &JsValue::from_bool(progress.potentially_accepted_write),
+        );
+        let responses = js_sys::Array::new();
+        for response in &progress.responses {
+            responses.push(&js_sys::Uint8Array::from(response.as_slice()));
+        }
+        set(&value, "responses", &responses);
+        value.into()
+    }
+
+    fn execution_value(
+        progress: &Progress,
+        status: &str,
+        error_code: Option<&str>,
+        error: Option<&str>,
+    ) -> JsValue {
+        let value = progress_value(progress);
+        let object: &js_sys::Object = value.unchecked_ref();
+        set(object, "status", &JsValue::from_str(status));
+        if let Some(code) = error_code {
+            set(object, "errorCode", &JsValue::from_str(code));
+        }
+        if let Some(message) = error {
+            set(object, "error", &JsValue::from_str(message));
+        }
+        value
+    }
+
+    fn map_execution_result(result: Result<Progress, ExecuteError>) -> JsValue {
+        match result {
+            Ok(progress) => execution_value(&progress, "completed", None, None),
+            Err(ExecuteError::Cancelled { progress }) => {
+                let status = if progress.bytes_written == 0 {
+                    "cancelled-before-send"
+                } else {
+                    "cancelled-partial"
+                };
+                execution_value(&progress, status, Some("cancelled"), None)
+            }
+            Err(ExecuteError::WriteOutcomeUnknown { progress, source }) => execution_value(
+                &progress,
+                "outcome-unknown",
+                Some("write-outcome-unknown"),
+                source.as_ref().map(|error| error.message.as_str()),
+            ),
+            Err(error) => {
+                let (progress, code): (Progress, &'static str) = match &error {
+                    ExecuteError::AtomicTooLarge { .. } => {
+                        (Progress::default(), "atomic-too-large")
+                    }
+                    ExecuteError::InvalidPlan { .. } => (Progress::default(), "invalid-plan"),
+                    ExecuteError::Replay(_) => (Progress::default(), "replay"),
+                    ExecuteError::ReplayStore(_) => (Progress::default(), "replay-store"),
+                    ExecuteError::Transport { progress, .. } => (progress.clone(), "transport"),
+                    ExecuteError::Timeout { progress } => (progress.clone(), "timeout"),
+                    ExecuteError::Response { progress, .. } => (progress.clone(), "response"),
+                    ExecuteError::Cancelled { .. } | ExecuteError::WriteOutcomeUnknown { .. } => {
+                        unreachable!("handled above")
+                    }
+                };
+                execution_value(&progress, "failed", Some(code), Some(&error.to_string()))
+            }
+        }
+    }
+
+    fn timing_value(value: &JsValue, name: &str) -> Result<u64, JsValue> {
+        let value = js_sys::Reflect::get(value, &JsValue::from_str(name))
+            .map_err(|_| execution_request_error("invalid-options", "invalid timing override"))?;
+        if value.is_null() || value.is_undefined() {
+            return Ok(0);
+        }
+        let number = value.as_f64().filter(|number| {
+            number.is_finite()
+                && *number >= 0.0
+                && number.fract() == 0.0
+                && *number <= js_sys::Number::MAX_SAFE_INTEGER
+        });
+        number
+            .map(|number| number as u64)
+            .ok_or_else(|| execution_request_error("invalid-options", "invalid timing override"))
+    }
+
+    fn parse_timing(value: &JsValue) -> Result<ReferenceTiming, JsValue> {
+        if value.is_null() || value.is_undefined() {
+            return Ok(ReferenceTiming::Preserve);
+        }
+        if !value.is_object() {
+            return Err(execution_request_error(
+                "invalid-options",
+                "timing override must be an object",
+            ));
+        }
+        let increase = timing_value(value, "additionalDelayMs")?;
+        let reduction = timing_value(value, "unsafeDiagnosticReductionMs")?;
+        match (increase, reduction) {
+            (0, 0) => Ok(ReferenceTiming::Preserve),
+            (increase, 0) => Ok(ReferenceTiming::IncreaseBy(increase)),
+            (0, reduction) => Ok(ReferenceTiming::UnsafeDiagnosticReduceBy(reduction)),
+            _ => Err(execution_request_error(
+                "invalid-options",
+                "timing increase and unsafe reduction are mutually exclusive",
+            )),
+        }
+    }
 
     fn sheet_error(error: super::SheetApiError) -> JsValue {
         let value = js_sys::Error::new(&error.message);
@@ -1163,6 +1310,52 @@ mod bindings {
     ) -> Result<String, JsValue> {
         super::render_protocol_batch_plan_with_options(input, model, options_json)
             .map_err(|e| JsValue::from_str(&e))
+    }
+
+    /// Executes a serialized core plan through a structural browser transport.
+    /// All execution policy remains in `mb-printer-executor`; JavaScript only
+    /// supplies the platform I/O operations.
+    #[wasm_bindgen(js_name = executePlan, unchecked_return_type = "ExecutionResult")]
+    pub async fn execute_plan(
+        plan_json: &str,
+        transport: super::transport::BrowserTransport,
+        #[wasm_bindgen(unchecked_param_type = "ReferenceTiming")] timing: JsValue,
+        signal: Option<web_sys::AbortSignal>,
+        #[wasm_bindgen(unchecked_optional_param_type = "(progress: ExecutionProgress) => void")]
+        on_progress: Option<js_sys::Function>,
+    ) -> Result<JsValue, JsValue> {
+        let plan: Plan = serde_json::from_str(plan_json)
+            .map_err(|_| execution_request_error("invalid-plan-json", "plan JSON is malformed"))?;
+        let timing = parse_timing(&timing)?;
+        let cancellation = signal
+            .clone()
+            .map(super::transport::AbortSignalCancellation::new);
+        let never = NeverCancelled;
+        let cancellation: &dyn Cancellation = cancellation
+            .as_ref()
+            .map_or(&never, |cancellation| cancellation);
+        let mut transport = super::transport::JsTransport::new(transport, signal);
+        transport.validate_limits().map_err(|_| {
+            execution_request_error(
+                "invalid-transport",
+                "browser transport has invalid payload limits",
+            )
+        })?;
+        let result = execute_with_options(
+            &plan,
+            &mut transport,
+            ExecutionOptions {
+                timing,
+                cancellation,
+            },
+            |progress| {
+                if let Some(callback) = &on_progress {
+                    let _ = callback.call1(&JsValue::UNDEFINED, &progress_value(progress));
+                }
+            },
+        )
+        .await;
+        Ok(map_execution_result(result))
     }
 }
 

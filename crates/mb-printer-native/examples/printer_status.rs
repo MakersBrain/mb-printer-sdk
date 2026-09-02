@@ -6,9 +6,12 @@
 //! Requires permission on the USB device (a udev rule, or run with sudo).
 
 #[cfg(feature = "usb")]
-fn main() -> Result<(), String> {
+#[tokio::main]
+async fn main() -> Result<(), String> {
     use mb_printer_core::{capabilities, protocol};
-    use mb_printer_native::{Transport, WaitOutcome, execute, transports::usb};
+    use mb_printer_executor::{Transport, WaitOutcome, execute};
+    use mb_printer_native::transports::usb;
+    use std::time::Duration;
 
     let model = std::env::args()
         .nth(1)
@@ -44,7 +47,9 @@ fn main() -> Result<(), String> {
     };
     if std::env::var("MB_STATUS_EXECUTE").is_ok() {
         // Exercise the executor's own capture path, which the browser route mirrors.
-        let progress = execute(&plan, &mut transport).map_err(|error| error.to_string())?;
+        let progress = execute(&plan, &mut transport)
+            .await
+            .map_err(|error| error.to_string())?;
         let captured = progress
             .responses
             .last()
@@ -54,12 +59,22 @@ fn main() -> Result<(), String> {
             serde_json::to_string_pretty(&protocol::brother_parse_status(captured)?)
                 .map_err(|error| error.to_string())?
         );
+        transport
+            .disconnect()
+            .await
+            .map_err(|error| error.to_string())?;
         return Ok(());
     }
-    execute(&request, &mut transport).map_err(|error| error.to_string())?;
+    execute(&request, &mut transport)
+        .await
+        .map_err(|error| error.to_string())?;
     let mut reply = Vec::new();
     for _ in 0..8 {
-        match transport.wait_response(3_000)? {
+        match transport
+            .wait_response(Duration::from_secs(3))
+            .await
+            .map_err(|error| error.to_string())?
+        {
             WaitOutcome::Response(bytes) => {
                 reply.extend(bytes);
                 if reply.len() >= 32 {
@@ -83,6 +98,10 @@ fn main() -> Result<(), String> {
         "{}",
         serde_json::to_string_pretty(&status).map_err(|error| error.to_string())?
     );
+    transport
+        .disconnect()
+        .await
+        .map_err(|error| error.to_string())?;
     Ok(())
 }
 

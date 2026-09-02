@@ -14,6 +14,29 @@ fn wasm_facade_and_native_core_are_identical() {
 }
 
 #[test]
+fn wasm_capabilities_expose_core_ble_profiles() {
+    let wasm: serde_json::Value =
+        serde_json::from_str(&mb_printer_wasm::capabilities_json()).unwrap();
+    let core = serde_json::to_value(mb_printer_core::capabilities::bundled()).unwrap();
+    assert_eq!(wasm, core);
+    let printers = wasm.as_array().unwrap();
+    assert_eq!(
+        printers
+            .iter()
+            .find(|printer| printer["id"] == "m110")
+            .unwrap()["ble"]["capabilities"]["writeCharacteristic"],
+        "0000ff02-0000-1000-8000-00805f9b34fb"
+    );
+    assert_eq!(
+        printers
+            .iter()
+            .find(|printer| printer["id"] == "ql-1100")
+            .unwrap()["ble"]["kind"],
+        "unsupported"
+    );
+}
+
+#[test]
 fn measurement_reports_versioned_physical_ink_bounds() {
     let encoded = mb_printer_wasm::measure_document_json(DOC).unwrap();
     let value: serde_json::Value = serde_json::from_str(&encoded).unwrap();

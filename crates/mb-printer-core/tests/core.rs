@@ -18,7 +18,7 @@ fn printer_definitions_are_losslessly_loaded() {
 #[test]
 fn printer_operations_default_to_print_and_are_explicit_for_brother_models() {
     let legacy: capabilities::PrinterDefinition = serde_json::from_str(
-        r#"{"id":"legacy","name":"Legacy","protocol":"m02","widthBytes":null}"#,
+        r#"{"id":"minimal","name":"Minimal","protocol":"m02","ble":{"kind":"unsupported"},"widthBytes":null}"#,
     )
     .unwrap();
     assert_eq!(legacy.operations, vec![PrinterOperation::Print]);

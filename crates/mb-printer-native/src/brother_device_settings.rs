@@ -4,7 +4,7 @@
 use mb_printer_core::discovery::SettingValue;
 use std::time::{Duration, Instant};
 
-use crate::{Transport, WaitOutcome};
+use crate::{Transport, WaitOutcome, WriteKind};
 
 const STATUS_REQUEST: &[u8] = b"\x1b@\x1biS";
 const ENTER_SETTINGS_MODE: &[u8] = b"\x1bia\x01";
@@ -135,7 +135,7 @@ pub struct DeviceSettingsInspection {
 /// Retrieves the commands confirmed in both the QL800/QL1100 and PTP710BT
 /// native `brdvset.exe` builds. The caller selects a fixed model profile and
 /// the 32-byte status identity must match before settings mode is entered.
-pub fn retrieve_device_settings<T: Transport>(
+pub async fn retrieve_device_settings<T: Transport>(
     transport: &mut T,
     profile: &'static BrotherModelProfile,
 ) -> DeviceSettingsInspection {
@@ -146,15 +146,15 @@ pub fn retrieve_device_settings<T: Transport>(
         error: None,
     };
 
-    if let Err(error) = drain_stale_responses(transport) {
+    if let Err(error) = drain_stale_responses(transport).await {
         inspection.error = Some(format!("input drain failed: {error}"));
         return inspection;
     }
-    if let Err(error) = write_command(transport, STATUS_REQUEST) {
+    if let Err(error) = write_command(transport, STATUS_REQUEST).await {
         inspection.error = Some(error);
         return inspection;
     }
-    let status = match read_exact_response(transport, 32) {
+    let status = match read_exact_response(transport, 32).await {
         Ok(status) => status,
         Err(error) => {
             inspection.error = Some(format!("status request failed: {error}"));
@@ -169,7 +169,7 @@ pub fn retrieve_device_settings<T: Transport>(
         ));
         return inspection;
     }
-    if let Err(error) = write_command(transport, ENTER_SETTINGS_MODE) {
+    if let Err(error) = write_command(transport, ENTER_SETTINGS_MODE).await {
         inspection.error = Some(format!("could not enter device-settings mode: {error}"));
         return inspection;
     }
@@ -182,8 +182,10 @@ pub fn retrieve_device_settings<T: Transport>(
             raw_response: None,
             error: None,
         };
-        let result = write_command(transport, setting.command())
-            .and_then(|()| read_exact_response(transport, setting.response_size()));
+        let result = match write_command(transport, setting.command()).await {
+            Ok(()) => read_exact_response(transport, setting.response_size()).await,
+            Err(error) => Err(error),
+        };
         match result {
             Ok(response) => {
                 observation.value = decode(setting, &response);
@@ -205,7 +207,7 @@ pub fn retrieve_device_settings<T: Transport>(
         inspection.observations.push(observation);
     }
 
-    if let Err(error) = write_command(transport, EXIT_SETTINGS_MODE) {
+    if let Err(error) = write_command(transport, EXIT_SETTINGS_MODE).await {
         let message = format!("could not exit device-settings mode: {error}");
         inspection.error = Some(match inspection.error.take() {
             Some(previous) => format!("{previous}; {message}"),
@@ -215,7 +217,7 @@ pub fn retrieve_device_settings<T: Transport>(
     inspection
 }
 
-fn write_command<T: Transport>(transport: &mut T, command: &[u8]) -> Result<(), String> {
+async fn write_command<T: Transport>(transport: &mut T, command: &[u8]) -> Result<(), String> {
     if command.len() > transport.command_limit() {
         return Err(format!(
             "command is {} bytes but transport command limit is {}",
@@ -223,10 +225,13 @@ fn write_command<T: Transport>(transport: &mut T, command: &[u8]) -> Result<(), 
             transport.command_limit()
         ));
     }
-    transport.write(command)
+    transport
+        .write(command, WriteKind::Command)
+        .await
+        .map_err(|error| error.to_string())
 }
 
-fn read_exact_response<T: Transport>(
+async fn read_exact_response<T: Transport>(
     transport: &mut T,
     expected: usize,
 ) -> Result<Vec<u8>, String> {
@@ -237,7 +242,11 @@ fn read_exact_response<T: Transport>(
         let timeout_ms = u64::try_from(remaining.as_millis())
             .unwrap_or(u64::MAX)
             .max(1);
-        match transport.wait_response(timeout_ms)? {
+        match transport
+            .wait_response(Duration::from_millis(timeout_ms))
+            .await
+            .map_err(|error| error.to_string())?
+        {
             WaitOutcome::Response(bytes) => {
                 if response.len().saturating_add(bytes.len()) > expected {
                     return Err(format!("response exceeded expected {expected}-byte size"));
@@ -256,10 +265,14 @@ fn read_exact_response<T: Transport>(
     Ok(response)
 }
 
-fn drain_stale_responses<T: Transport>(transport: &mut T) -> Result<(), String> {
+async fn drain_stale_responses<T: Transport>(transport: &mut T) -> Result<(), String> {
     let mut drained = 0usize;
     loop {
-        match transport.wait_response(DRAIN_TIMEOUT_MS)? {
+        match transport
+            .wait_response(Duration::from_millis(DRAIN_TIMEOUT_MS))
+            .await
+            .map_err(|error| error.to_string())?
+        {
             WaitOutcome::Response(bytes) => {
                 drained = drained
                     .checked_add(bytes.len())

@@ -1726,6 +1726,20 @@ dependencies = [
  "sha2",
  "thiserror 2.0.20",
  "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "mb-printer-executor"
+version = "0.1.0"
+dependencies = [
+ "futures-executor",
+ "futures-util",
+ "mb-printer-core",
+ "thiserror 2.0.20",
+ "tracing",
+ "wasm-bindgen",
+ "web-time",
 ]
 
 [[package]]
@@ -1737,6 +1751,7 @@ dependencies = [
  "futures-util",
  "libc",
  "mb-printer-core",
+ "mb-printer-executor",
  "mdns-sd",
  "reqwest",
  "rusb",
@@ -1756,9 +1771,12 @@ version = "0.1.0"
 dependencies = [
  "js-sys",
  "mb-printer-core",
+ "mb-printer-executor",
  "serde",
  "serde_json",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]
@@ -3500,6 +3518,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b5772d71c9be8a8a6ac2117d949c5b224c1b72241bb611d9a3012edcf8af7812"
 dependencies = [
  "js-sys",
+ "serde_core",
  "wasm-bindgen",
 ]
 

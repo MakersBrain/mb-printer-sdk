@@ -18,8 +18,11 @@ include = ["/src/**", "/tests/**", "/Cargo.toml", "/README.md", "/LICENSE"]
 crate-type = ["cdylib", "rlib"]
 [dependencies]
 mb-printer-core = { version = "=0.1.0", path = "../mb-printer-core" }
+mb-printer-executor = { version = "=0.1.0", path = "../mb-printer-executor" }
 serde_json.workspace = true
 serde.workspace = true
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "=0.2.127"
+wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
+web-sys = { version = "0.3", features = ["AbortSignal", "AddEventListenerOptions", "Event", "EventTarget"] }
