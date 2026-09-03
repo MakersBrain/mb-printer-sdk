@@ -267,6 +267,31 @@ pub fn validate_document_json(input: &str) -> String {
 pub fn capabilities_json() -> String {
     serde_json::to_string(&capabilities::bundled()).expect("definitions serialize")
 }
+/// Identity of this SDK build, recorded at compile time by `build.rs`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BuildInfo {
+    /// Cargo package name of the bindings crate.
+    pub name: &'static str,
+    /// Cargo package version shared by every workspace crate.
+    pub version: &'static str,
+    /// Full git commit the bindings were compiled from, or `unknown`.
+    pub commit: &'static str,
+    /// Whether tracked files were modified when the bindings were compiled.
+    pub dirty: bool,
+    /// Commit of the reference protocol implementation stamped into every plan.
+    pub protocol_source_commit: &'static str,
+}
+pub const BUILD_INFO: BuildInfo = BuildInfo {
+    name: env!("CARGO_PKG_NAME"),
+    version: env!("CARGO_PKG_VERSION"),
+    commit: env!("MB_SDK_GIT_COMMIT"),
+    dirty: matches!(env!("MB_SDK_GIT_DIRTY").as_bytes(), b"1"),
+    protocol_source_commit: protocol::SOURCE_COMMIT,
+};
+pub fn build_info_json() -> String {
+    serde_json::to_string(&BUILD_INFO).expect("build info serializes")
+}
 pub fn import_v3_json(input: &str) -> Result<String, String> {
     enforce_json_wire(&[input])?;
     let limits = processing_limits();
@@ -1137,6 +1162,12 @@ mod bindings {
     #[wasm_bindgen(js_name=printerCapabilities)]
     pub fn printer_capabilities() -> String {
         super::capabilities_json()
+    }
+    /// JSON `BuildInfo`: package name and version plus the git commit the
+    /// WebAssembly module was compiled from.
+    #[wasm_bindgen(js_name=buildInfo)]
+    pub fn build_info() -> String {
+        super::build_info_json()
     }
     #[wasm_bindgen(js_name=importV3)]
     pub fn import_v3(input: &str) -> Result<String, JsValue> {

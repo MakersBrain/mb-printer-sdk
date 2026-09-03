@@ -418,3 +418,21 @@ fn wasm_facade_uses_the_portable_bounded_ipp_codec() {
     );
     assert!(mb_printer_wasm::decode_ipp_json(&bytes, 8).is_err());
 }
+
+#[test]
+fn wasm_build_info_reports_package_and_commit() {
+    let info: serde_json::Value =
+        serde_json::from_str(&mb_printer_wasm::build_info_json()).unwrap();
+    assert_eq!(info["name"], "mb-printer-wasm");
+    assert_eq!(info["version"], env!("CARGO_PKG_VERSION"));
+    let commit = info["commit"].as_str().unwrap();
+    assert!(
+        commit == "unknown" || commit.len() == 40 && commit.bytes().all(|b| b.is_ascii_hexdigit()),
+        "{commit}"
+    );
+    assert!(info["dirty"].is_boolean());
+    assert_eq!(
+        info["protocolSourceCommit"],
+        mb_printer_core::protocol::SOURCE_COMMIT
+    );
+}

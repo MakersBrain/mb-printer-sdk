@@ -44,6 +44,14 @@ Within this repository, editor integration tests may use the stable generated
 entrypoint `mb-printer-sdk/crates/mb-printer-wasm/pkg/web/mb_printer_wasm.js`
 after running `npm run build` in this package.
 
+## Build identity
+
+`buildInfo()` returns JSON describing the embedded module: `name`, `version`,
+the full git `commit` it was compiled from, whether the tree was `dirty`, and
+the `protocolSourceCommit` stamped into plans. `build.rs` reads the commit from
+git; set `MB_SDK_GIT_COMMIT` (and optionally `MB_SDK_GIT_DIRTY=1`) when building
+from an archive or container without a repository.
+
 ## PDF limitations
 
 PDF decoding uses the pinned memory-safe pure-Rust Hayro backend. Embedded PDF
