@@ -57,8 +57,26 @@ pub fn import_v3(input: &str) -> Result<Value, ImportError> {
         }
     }
     Ok(
-        json!({"version":4,"name":v.get("name").and_then(Value::as_str).unwrap_or("Imported v3"),"media":{"width":mm(width),"height":mm(height),"unit":"micrometre","dpi":(dpmm*25.4).round() as u64,"orientation":"portrait","printableBounds":{"x":0,"y":0,"width":mm(width),"height":mm(height)},"shape":if v.get("round").and_then(Value::as_bool).unwrap_or(false){"round"}else{"rectangle"},"continuous":v.get("continuous").and_then(Value::as_bool).unwrap_or(false),"zones":[]},"coordinateSystem":{"unit":"micrometre","origin":"top-left","rounding":"half-away-from-zero"},"elements":elements,"resources":resources,"fields":v.get("fields").cloned().unwrap_or(json!([])),"extensions":{"makersbrain:legacy-v3":{"dotsPerMm":dpmm}}}),
+        json!({"version":4,"name":v.get("name").and_then(Value::as_str).unwrap_or("Imported v3"),"media":{"width":mm(width),"height":mm(height),"unit":"micrometre","dpi":(dpmm*25.4).round() as u64,"orientation":"portrait","printableBounds":{"x":0,"y":0,"width":mm(width),"height":mm(height)},"shape":if v.get("round").and_then(Value::as_bool).unwrap_or(false){"round"}else{"rectangle"},"continuous":v.get("continuous").and_then(Value::as_bool).unwrap_or(false),"zones":[]},"coordinateSystem":{"unit":"micrometre","origin":"top-left","rounding":"half-away-from-zero"},"elements":elements,"resources":resources,"fields":fields(&v),"extensions":{"makersbrain:legacy-v3":{"dotsPerMm":dpmm}}}),
     )
+}
+
+
+/// Legacy field descriptors carry editor-only keys such as `source` and `binding`;
+/// the canonical document keeps only the key and its label.
+fn fields(v: &Value) -> Value {
+    let fields = v
+        .get("fields")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|field| {
+            let key = field.get("key").and_then(Value::as_str)?;
+            let label = field.get("label").and_then(Value::as_str).unwrap_or(key);
+            Some(json!({ "key": key, "label": label }))
+        })
+        .collect::<Vec<_>>();
+    Value::Array(fields)
 }
 
 /// Flatten legacy groups whose children were embedded objects rather than ID references.
