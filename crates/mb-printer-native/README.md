@@ -82,6 +82,27 @@ may be absent when the model declares it optional. Cancellation never triggers
 an automatic retry, including when a write's outcome is unknown; reconnect and
 retry policy belongs to the caller.
 
+## Qualified SNMP inspection
+
+`mb-printer-snmp` accepts semantic properties from the compiled Brother
+catalogue, never arbitrary OIDs. Pass the community through an environment
+variable so it is not exposed in the process command line:
+
+```console
+export MB_PRINTER_SNMP_COMMUNITY='private-local-value'
+cargo run -p mb-printer-native --features snmp --bin mb-printer-snmp -- \
+  inspect-firmware --endpoint 192.168.1.25:161 --model HL-L2375DW \
+  --qualification-id local-hl-l2375dw
+
+cargo run -p mb-printer-native --features snmp --bin mb-printer-snmp -- \
+  read-property --endpoint 192.168.1.25:161 --model HL-L2375DW \
+  --qualification-id local-hl-l2375dw --property printer.serial-number
+```
+
+The initial production catalogue is read-only. Firmware inventory fetches the
+fixed 16-instance Brother record sequence in one bounded request and emits
+credential-elided response hashes with each observation.
+
 ## Read-only Brother settings retrieval
 
 `brother-settings-retrieve` reproduces the retrieval side of Brother's Printer

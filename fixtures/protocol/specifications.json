@@ -1,0 +1,65 @@
+{
+  "spdxLicense": "AGPL-3.0-or-later",
+  "schemaVersion": 1,
+  "researchRepository": "https://github.com/MakersBrain/mb-printer-research",
+  "fixtureIdFormat": "python-actions:<protocol>:<model>:<profile>",
+  "profiles": ["low", "balanced", "high"],
+  "protocols": [
+    {
+      "protocol": "m-series",
+      "model": "m03",
+      "specification": {"path": "vendors/phomemo/protocols/phomemo-protocol-spec.md", "version": "0.1.0", "maturity": "candidate", "commit": "d59178b785fa6cf470391299e4b1852d2968b811", "authoritative": false},
+      "authority": {"repository": "https://github.com/MakersBrain/mb-cli-printer", "commit": "96e2e622cea6f57018a0b8d488e746a39b10da54"},
+      "knownDeviations": []
+    },
+    {
+      "protocol": "m02",
+      "model": "m02",
+      "specification": {"path": "vendors/phomemo/protocols/phomemo-protocol-spec.md", "version": "0.1.0", "maturity": "candidate", "commit": "d59178b785fa6cf470391299e4b1852d2968b811", "authoritative": false},
+      "authority": {"repository": "https://github.com/MakersBrain/mb-cli-printer", "commit": "96e2e622cea6f57018a0b8d488e746a39b10da54"},
+      "knownDeviations": []
+    },
+    {
+      "protocol": "m04",
+      "model": "m04s-53",
+      "specification": {"path": "vendors/phomemo/protocols/phomemo-protocol-spec.md", "version": "0.1.0", "maturity": "candidate", "commit": "d59178b785fa6cf470391299e4b1852d2968b811", "authoritative": false},
+      "authority": {"repository": "https://github.com/MakersBrain/mb-cli-printer", "commit": "96e2e622cea6f57018a0b8d488e746a39b10da54"},
+      "knownDeviations": []
+    },
+    {
+      "protocol": "m110",
+      "model": "m110",
+      "specification": {"path": "vendors/phomemo/protocols/phomemo-protocol-spec.md", "version": "0.1.0", "maturity": "candidate", "commit": "d59178b785fa6cf470391299e4b1852d2968b811", "authoritative": false},
+      "authority": {"repository": "https://github.com/MakersBrain/mb-cli-printer", "commit": "96e2e622cea6f57018a0b8d488e746a39b10da54"},
+      "knownDeviations": []
+    },
+    {
+      "protocol": "d-series",
+      "model": "d-series",
+      "specification": {"path": "vendors/phomemo/protocols/phomemo-protocol-spec.md", "version": "0.1.0", "maturity": "candidate", "commit": "d59178b785fa6cf470391299e4b1852d2968b811", "authoritative": false},
+      "authority": {"repository": "https://github.com/MakersBrain/mb-cli-printer", "commit": "96e2e622cea6f57018a0b8d488e746a39b10da54"},
+      "knownDeviations": []
+    },
+    {
+      "protocol": "p12",
+      "model": "p12",
+      "specification": {"path": "vendors/phomemo/protocols/phomemo-protocol-spec.md", "version": "0.1.0", "maturity": "candidate", "commit": "d59178b785fa6cf470391299e4b1852d2968b811", "authoritative": false},
+      "authority": {"repository": "https://github.com/MakersBrain/mb-cli-printer", "commit": "96e2e622cea6f57018a0b8d488e746a39b10da54"},
+      "knownDeviations": ["Fallback timing is retained for transports that cannot receive notifications."]
+    },
+    {
+      "protocol": "tspl",
+      "model": "pm241",
+      "specification": {"path": "vendors/phomemo/protocols/phomemo-protocol-spec.md", "version": "0.1.0", "maturity": "candidate", "commit": "d59178b785fa6cf470391299e4b1852d2968b811", "authoritative": false},
+      "authority": {"repository": "https://github.com/MakersBrain/mb-cli-printer", "commit": "96e2e622cea6f57018a0b8d488e746a39b10da54"},
+      "knownDeviations": ["Only the SDK-supported TSPL printing subset is implemented."]
+    },
+    {
+      "protocol": "brother",
+      "model": "ql-1100",
+      "specification": null,
+      "authority": {"repository": "https://github.com/MakersBrain/mb-cli-printer", "commit": "96e2e622cea6f57018a0b8d488e746a39b10da54"},
+      "knownDeviations": ["Rust waits for and validates the requested Brother status; the Python print flow sends the request but does not await it."]
+    }
+  ]
+}

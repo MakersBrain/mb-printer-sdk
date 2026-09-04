@@ -18,6 +18,7 @@ serde_json = "1"
 thiserror = "2"
 sha2 = "0.10"
 tracing = "0.1"
+async-snmp = { version = "=0.18.1", default-features = false }
 
 [workspace.lints.rust]
 future-incompatible = "warn"

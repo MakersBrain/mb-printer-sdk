@@ -7,6 +7,8 @@
 pub mod blocking;
 pub mod brother_device_settings;
 pub mod brother_settings;
+#[cfg(feature = "snmp")]
+pub mod snmp_properties;
 pub mod transports;
 #[cfg(any(feature = "ble", feature = "ipp", feature = "snmp"))]
 pub mod workers;

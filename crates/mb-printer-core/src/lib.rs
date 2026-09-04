@@ -21,6 +21,7 @@ pub mod media;
 pub mod pdf_import;
 pub mod probe;
 pub mod protocol;
+pub mod providers;
 pub mod raster;
 pub mod render;
 pub mod resources;
