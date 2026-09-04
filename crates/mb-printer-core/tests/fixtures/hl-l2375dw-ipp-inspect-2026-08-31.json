@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 1,
+  "spdxLicense": "AGPL-3.0-or-later",
+  "status": "unsigned",
+  "hardwareClaim": false,
+  "qualificationId": "hl-l2375dw.ipp-inspect.v1.pending-review",
+  "operation": {
+    "kind": "ipp-get-printer-attributes",
+    "requestedAttributes": ["all"],
+    "risk": "read-only",
+    "requestId": 104395
+  },
+  "device": {
+    "manufacturer": "Brother",
+    "model": "HL-L2375DW series",
+    "uuidSha256": "a9605409ed7842b22d02f65d5ff48fa8a16f4bf5c1ba5c4a2d16ef06a508110b",
+    "firmwareVersions": ["1.72", "1.04"]
+  },
+  "origin": {
+    "transport": "ipp",
+    "protocol": "ipp",
+    "endpointSha256": "9cd079fbe25c346ced8b2d8e882da9c83d41b934668b9ea8925ada9fda12411f",
+    "capturedAt": "2026-08-31T18:39:03.500581522+02:00",
+    "sdkCommit": "fe6f7d184491c6cdd3ea6e5d81d309e7035f3d20"
+  },
+  "timing": {
+    "requestToResponseMilliseconds": 177.526221,
+    "captureRequestFrame": 5,
+    "captureResponseFrame": 20
+  },
+  "limits": {
+    "maximumMessageBytes": 4194304,
+    "maximumGroups": 32,
+    "maximumAttributes": 4096,
+    "maximumValues": 16384,
+    "maximumNameBytes": 1024,
+    "maximumValueBytes": 1048576,
+    "maximumDecodedBytes": 8388608,
+    "maximumCollectionDepth": 16,
+    "maximumCollectionMembers": 4096
+  },
+  "evidence": {
+    "rawResponseBytes": 8421,
+    "rawResponseSha256": "b48ef84290f896238432ae0967f87d437ba93706a17e9855051bbca88de54e18",
+    "pcapBytes": 11948,
+    "pcapSha256": "254e942d08495cfcce602d3cf5807d88332268abce88e02e71fa5cf048ecb213",
+    "sanitizedFixtureSha256": "826e107984e84bb4bf497aad81f53bdce309834e8abeb134686f8768df2aa8b8",
+    "rawArtifactsPrivate": true
+  },
+  "result": {
+    "status": "successful-ok",
+    "responseGroups": 2,
+    "responseAttributes": 111,
+    "unknownOrOutOfBandValues": 1,
+    "originalBytesPreserved": true,
+    "configurationChanged": false,
+    "configurationChangeBasis": "The capture contains one Get-Printer-Attributes request and its response; no print or configuration-write operation was transmitted."
+  },
+  "review": {
+    "operator": null,
+    "signature": null,
+    "releaseQualification": false,
+    "requiredNextStep": "Authorized operator review and signature"
+  }
+}
