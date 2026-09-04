@@ -33,6 +33,7 @@ rustybuzz = "=0.20.1"
 hayro = { version = "=0.7.1", default-features = false, features = ["embed-cmaps", "embed-fonts"] }
 lzokay-native = { version = "0.1.0", default-features = false, features = ["compress"] }
 uuid = { version = "1", features = ["serde"] }
+wuff = "=0.2.9"
 
 [dev-dependencies]
 ipp = { version = "7.0.0", default-features = false }
