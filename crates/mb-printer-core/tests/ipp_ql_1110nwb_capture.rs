@@ -17,8 +17,7 @@ use std::io::Cursor;
 const CAPTURE_BASE64: &str = include_str!("fixtures/ql-1110nwb-get-printer-attributes.ipp.b64");
 const CAPTURE_MANIFEST: &str =
     include_str!("fixtures/ql-1110nwb-get-printer-attributes.capture.json");
-const QUALIFICATION_REPORT: &str =
-    include_str!("../../../fixtures/hardware/unsigned/ql-1110nwb-ipp-inspect-2026-08-31.json");
+const QUALIFICATION_REPORT: &str = include_str!("fixtures/ql-1110nwb-ipp-inspect-2026-08-31.json");
 
 fn fixture() -> Vec<u8> {
     STANDARD

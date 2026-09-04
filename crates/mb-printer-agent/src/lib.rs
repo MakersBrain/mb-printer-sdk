@@ -1,5 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+//! Policy-enforcing execution for authenticated printer-agent requests.
+//!
+//! The agent validates short-lived wire requests, resolves only locally published
+//! printers, applies output and write policy, and delegates native IPP I/O to
+//! [`mb_printer_native`]. Callers retain ownership of the Tokio runtime.
 #![forbid(unsafe_code)]
+
+mod administration_execution;
+mod inspect_execution;
+mod probe_execution;
 
 use mb_printer_agent_proto::{
     ContractError,
@@ -25,18 +34,19 @@ use mb_printer_core::{
         build_read_only_probe_report, prepare_registered_probe,
     },
 };
+use mb_printer_native::Cancellation;
+pub use mb_printer_native::CancellationToken;
 use mb_printer_native::transports::ipp::{
     ApplyChangeOutcome, InspectLimits, IppClient, IppClientError, IppEndpoint, IppScheme,
     PlanChangeError as NativePlanChangeError,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
-    sync::{Arc, Mutex, RwLock},
+    sync::{Mutex, PoisonError, RwLock},
     time::Duration,
 };
 use std::{future::Future, pin::Pin};
 use thiserror::Error;
-use tokio::sync::Notify;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentPolicy {
@@ -117,35 +127,6 @@ pub enum AgentBuildError {
     Client(#[from] IppClientError),
 }
 
-#[derive(Debug, Default)]
-struct CancellationState {
-    cancelled: std::sync::atomic::AtomicBool,
-    notify: Notify,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct CancellationToken(Arc<CancellationState>);
-
-impl CancellationToken {
-    pub fn cancel(&self) {
-        self.0
-            .cancelled
-            .store(true, std::sync::atomic::Ordering::Release);
-        self.0.notify.notify_waiters();
-    }
-
-    pub fn is_cancelled(&self) -> bool {
-        self.0.cancelled.load(std::sync::atomic::Ordering::Acquire)
-    }
-
-    async fn cancelled(&self) {
-        if self.is_cancelled() {
-            return;
-        }
-        self.0.notify.notified().await;
-    }
-}
-
 #[derive(Debug)]
 pub struct AgentExecutor {
     policy: AgentPolicy,
@@ -193,7 +174,7 @@ impl AgentExecutor {
         }
         self.printers
             .write()
-            .expect("published-printer registry lock poisoned")
+            .unwrap_or_else(PoisonError::into_inner)
             .insert(printer.printer_id.clone(), printer);
         Ok(())
     }
@@ -210,7 +191,7 @@ impl AgentExecutor {
             printers: self
                 .printers
                 .read()
-                .expect("published-printer registry lock poisoned")
+                .unwrap_or_else(PoisonError::into_inner)
                 .values()
                 .map(|printer| WirePublishedPrinter {
                     printer_id: printer.printer_id.clone(),
@@ -251,700 +232,6 @@ impl AgentExecutor {
             printer.operations.push(OperationKind::RunProbe as i32);
         }
         capabilities
-    }
-
-    pub async fn execute_initial(
-        &self,
-        request: ProtocolRequest,
-        now_unix_ms: u64,
-        cancellation: CancellationToken,
-    ) -> InitialExecution {
-        if let Err(error) = validate_request(
-            &request,
-            now_unix_ms,
-            self.policy.maximum_timeout_ms,
-            self.policy.maximum_response_bytes,
-            &[OperationKind::IppInspect],
-        )
-        .and_then(|()| validate_initial_release_request(&request))
-        {
-            return InitialExecution::Rejected(rejection(&request.request_id, error));
-        }
-        if request.contract_version != self.policy.contract_version {
-            return InitialExecution::Rejected(ProtocolRequestRejected {
-                request_id: request.request_id,
-                reason: RejectionReason::UnsupportedVersion as i32,
-                safe_message: "unsupported contract version".into(),
-            });
-        }
-        let printer = self
-            .printers
-            .read()
-            .expect("published-printer registry lock poisoned")
-            .get(&request.printer_id)
-            .cloned();
-        let Some(printer) = printer else {
-            return InitialExecution::Rejected(reject(
-                request.request_id,
-                RejectionReason::UnknownPrinter,
-                "unknown published printer",
-            ));
-        };
-        if printer.endpoint_generation != request.endpoint_generation {
-            return InitialExecution::Rejected(reject(
-                request.request_id,
-                RejectionReason::StaleEndpoint,
-                "stale endpoint generation",
-            ));
-        }
-        let protocol_request::Operation::IppInspect(operation) =
-            request.operation.clone().expect("validated operation")
-        else {
-            unreachable!("initial-release validation permits only IppInspect")
-        };
-        if !output_authorized(operation.output_mode, &self.policy) {
-            return InitialExecution::Rejected(reject(
-                request.request_id,
-                RejectionReason::Unauthorized,
-                "requested output mode is not authorized",
-            ));
-        }
-        let accepted = ProtocolRequestAccepted {
-            request_id: request.request_id.clone(),
-            accepted_at_unix_ms: now_unix_ms,
-        };
-        if cancellation.is_cancelled() {
-            return InitialExecution::Accepted {
-                accepted,
-                result: terminal(&request.request_id, ResultOutcome::Cancelled, "cancelled"),
-            };
-        }
-        let limits = request.limits.as_ref().expect("validated limits");
-        let inspect_limits = InspectLimits {
-            timeout: Duration::from_millis(limits.timeout_ms),
-            maximum_response_bytes: limits.maximum_response_bytes as usize,
-            codec: mb_printer_core::ipp::Limits {
-                max_message_bytes: limits.maximum_response_bytes as usize,
-                ..mb_printer_core::ipp::Limits::default()
-            },
-        };
-        let printer_uri = match printer.endpoint.printer_uri() {
-            Ok(uri) => uri,
-            Err(_) => {
-                return InitialExecution::Accepted {
-                    accepted,
-                    result: terminal(
-                        &request.request_id,
-                        ResultOutcome::Failed,
-                        "published printer endpoint is invalid",
-                    ),
-                };
-            }
-        };
-        let requested_attributes = if operation.requested_attributes.is_empty() {
-            vec!["all".to_owned()]
-        } else {
-            operation.requested_attributes
-        };
-        let ipp_request = mb_printer_core::ipp::get_printer_attributes_request(
-            &printer_uri,
-            requested_attributes.iter().map(String::as_str),
-            operation.document_format.as_deref(),
-            request_number(&request.request_id),
-        );
-        let response = tokio::select! {
-            biased;
-            () = cancellation.cancelled() => {
-                return InitialExecution::Accepted {
-                    accepted,
-                    result: terminal(&request.request_id, ResultOutcome::Cancelled, "cancelled"),
-                };
-            }
-            response = self.client.inspect(&printer.endpoint, &ipp_request, inspect_limits) => response,
-        };
-        let response = match response {
-            Ok(response) => response,
-            Err(error) => {
-                let (outcome, safe_message) = safe_client_error(&error);
-                return InitialExecution::Accepted {
-                    accepted,
-                    result: terminal(&request.request_id, outcome, safe_message),
-                };
-            }
-        };
-        let origin = ObservationOrigin {
-            agent_id: Some(self.policy.agent_id.clone()),
-            printer_id: printer.printer_id,
-            endpoint: printer_uri,
-            endpoint_generation: printer.endpoint_generation,
-            transport: match printer.endpoint.scheme {
-                IppScheme::Ipp => TransportKind::Ipp,
-                IppScheme::Ipps => TransportKind::Ipps,
-            },
-            protocol: ProtocolFamily::Ipp,
-            request_id: request.request_id.clone(),
-            probe_id: None,
-            observed_at: now_unix_ms.to_string(),
-            qualification: None,
-        };
-        let snapshot = normalize_ipp(&response, &origin, operation.document_format.as_deref());
-        let (mode, authorization) = output_policy(operation.output_mode, &self.policy);
-        let prepared = match prepare_snapshot_output(snapshot, mode, authorization) {
-            Ok(prepared) => prepared,
-            Err(_) => {
-                return InitialExecution::Accepted {
-                    accepted,
-                    result: terminal(
-                        &request.request_id,
-                        ResultOutcome::Failed,
-                        "output policy rejected the response",
-                    ),
-                };
-            }
-        };
-        let bounded_response = match serde_json::to_vec(&prepared.snapshot) {
-            Ok(response) if response.len() <= limits.maximum_response_bytes as usize => response,
-            Ok(_) => {
-                return InitialExecution::Accepted {
-                    accepted,
-                    result: terminal(
-                        &request.request_id,
-                        ResultOutcome::ResponseTooLarge,
-                        "normalized response exceeds configured limit",
-                    ),
-                };
-            }
-            Err(_) => {
-                return InitialExecution::Accepted {
-                    accepted,
-                    result: terminal(
-                        &request.request_id,
-                        ResultOutcome::Failed,
-                        "response serialization failed",
-                    ),
-                };
-            }
-        };
-        let result_endpoint = prepared
-            .snapshot
-            .observations
-            .first()
-            .map(|observation| observation.evidence.origin.endpoint.clone())
-            .unwrap_or_else(|| "[REDACTED]".into());
-        InitialExecution::Accepted {
-            accepted,
-            result: ProtocolResult {
-                request_id: request.request_id.clone(),
-                outcome: ResultOutcome::Succeeded as i32,
-                bounded_response,
-                evidence: vec![EvidenceOrigin {
-                    agent_id: self.policy.agent_id.clone(),
-                    printer_id: origin.printer_id,
-                    endpoint: result_endpoint,
-                    endpoint_generation: origin.endpoint_generation,
-                    transport: match origin.transport {
-                        TransportKind::Ipp => "ipp",
-                        TransportKind::Ipps => "ipps",
-                        _ => unreachable!(),
-                    }
-                    .into(),
-                    protocol: "ipp".into(),
-                    request_id: request.request_id,
-                    probe_id: None,
-                    qualification_id: None,
-                }],
-                output_mode: operation.output_mode,
-                safe_error: String::new(),
-                // Raw cloud material is ephemeral regardless of whether its
-                // sensitive values were redacted before transmission.
-                persistence_allowed: operation.output_mode
-                    == WireOutputMode::NormalizedRedacted as i32
-                    && prepared.retention.may_persist,
-                logging_allowed: operation.output_mode == WireOutputMode::NormalizedRedacted as i32
-                    && prepared.retention.may_log,
-            },
-        }
-    }
-
-    /// Later-phase guarded cloud administration. This API is deliberately
-    /// separate from `execute_initial`, whose advertised contract remains
-    /// read-only IppInspect.
-    pub async fn execute_guarded_ipp_change(
-        &self,
-        request: ProtocolRequest,
-        now_unix_ms: u64,
-        policy: &GuardedWritePolicy,
-    ) -> InitialExecution {
-        self.execute_guarded_ipp_change_with_cancellation(
-            request,
-            now_unix_ms,
-            policy,
-            CancellationToken::default(),
-        )
-        .await
-    }
-
-    pub async fn execute_registered_probe(
-        &self,
-        request: ProtocolRequest,
-        now_unix_ms: u64,
-        registry: &ProbeRegistry,
-        target: &PublishedProbeTarget,
-        runner: &dyn RegisteredProbeRunner,
-        cancellation: CancellationToken,
-    ) -> InitialExecution {
-        if let Err(error) = validate_request(
-            &request,
-            now_unix_ms,
-            self.policy.maximum_timeout_ms,
-            self.policy.maximum_response_bytes,
-            &[OperationKind::RunProbe],
-        ) {
-            return InitialExecution::Rejected(rejection(&request.request_id, error));
-        }
-        if request.contract_version != self.policy.contract_version {
-            return InitialExecution::Rejected(reject(
-                request.request_id,
-                RejectionReason::UnsupportedVersion,
-                "unsupported contract version",
-            ));
-        }
-        let published = self
-            .printers
-            .read()
-            .expect("published-printer registry lock poisoned")
-            .get(&request.printer_id)
-            .cloned();
-        let Some(published) = published else {
-            return InitialExecution::Rejected(reject(
-                request.request_id,
-                RejectionReason::UnknownPrinter,
-                "unknown published printer",
-            ));
-        };
-        if published.endpoint_generation != request.endpoint_generation
-            || target.printer_id != request.printer_id
-            || target.endpoint_generation != request.endpoint_generation
-        {
-            return InitialExecution::Rejected(reject(
-                request.request_id,
-                RejectionReason::StaleEndpoint,
-                "stale endpoint generation",
-            ));
-        }
-        let protocol_request::Operation::RunProbe(operation) =
-            request.operation.as_ref().expect("validated operation")
-        else {
-            unreachable!("RunProbe validation permits only RunProbe")
-        };
-        let id = mb_printer_core::probe::ProbeId(operation.probe_id.clone());
-        let Some(definition) = registry.get(&id) else {
-            return InitialExecution::Rejected(reject(
-                request.request_id,
-                RejectionReason::UnsupportedOperation,
-                "probe is not registered",
-            ));
-        };
-        if !definition.applies_to(
-            target.protocol,
-            target.transport,
-            target.manufacturer.as_deref(),
-            target.model.as_deref(),
-            target.firmware.as_deref(),
-        ) {
-            return InitialExecution::Rejected(reject(
-                request.request_id,
-                RejectionReason::Policy,
-                "probe is not qualified for this target",
-            ));
-        }
-        let prepared =
-            match prepare_registered_probe(registry, &id, target.printer_definition.as_ref()) {
-                Ok(prepared) => prepared,
-                Err(_) => {
-                    return InitialExecution::Rejected(reject(
-                        request.request_id,
-                        RejectionReason::Policy,
-                        "registered probe could not be prepared",
-                    ));
-                }
-            };
-        let limits = request.limits.as_ref().expect("validated limits");
-        if definition.limits.timeout_ms > limits.timeout_ms
-            || definition.limits.maximum_response_bytes > limits.maximum_response_bytes as usize
-        {
-            return InitialExecution::Rejected(reject(
-                request.request_id,
-                RejectionReason::LimitExceeded,
-                "request limits are below the registered probe limits",
-            ));
-        }
-        let accepted = ProtocolRequestAccepted {
-            request_id: request.request_id.clone(),
-            accepted_at_unix_ms: now_unix_ms,
-        };
-        if cancellation.is_cancelled() {
-            return InitialExecution::Accepted {
-                accepted,
-                result: terminal(&request.request_id, ResultOutcome::Cancelled, "cancelled"),
-            };
-        }
-        let output = tokio::select! {
-            biased;
-            () = cancellation.cancelled() => {
-                return InitialExecution::Accepted {
-                    accepted,
-                    result: terminal(&request.request_id, ResultOutcome::Cancelled, "cancelled"),
-                };
-            }
-            output = runner.run(prepared, definition.limits) => output,
-        };
-        let output = match output {
-            Ok(output) if output.response.len() <= definition.limits.maximum_response_bytes => {
-                output
-            }
-            Ok(_) => {
-                return InitialExecution::Accepted {
-                    accepted,
-                    result: terminal(
-                        &request.request_id,
-                        ResultOutcome::ResponseTooLarge,
-                        "probe response exceeded its registered limit",
-                    ),
-                };
-            }
-            Err(_) => {
-                return InitialExecution::Accepted {
-                    accepted,
-                    result: terminal(
-                        &request.request_id,
-                        ResultOutcome::Failed,
-                        "registered probe execution failed",
-                    ),
-                };
-            }
-        };
-        let mut report = match build_read_only_probe_report(
-            registry,
-            &id,
-            &output.response,
-            ObservationOrigin {
-                agent_id: Some(self.policy.agent_id.clone()),
-                printer_id: request.printer_id.clone(),
-                endpoint: target.endpoint_identity.clone(),
-                endpoint_generation: target.endpoint_generation,
-                transport: target.transport,
-                protocol: target.protocol,
-                request_id: request.request_id.clone(),
-                probe_id: Some(id.0.clone()),
-                observed_at: now_unix_ms.to_string(),
-                qualification: target.firmware.as_ref().map(|firmware| {
-                    mb_printer_core::discovery::QualificationMetadata {
-                        qualification_id: definition.qualification.qualification_id.clone(),
-                        firmware: Some(firmware.clone()),
-                        response_hash: None,
-                    }
-                }),
-            },
-            output.duration_ms,
-        ) {
-            Ok(report) => report,
-            Err(_) => {
-                return InitialExecution::Accepted {
-                    accepted,
-                    result: terminal(
-                        &request.request_id,
-                        ResultOutcome::Failed,
-                        "registered probe response was malformed",
-                    ),
-                };
-            }
-        };
-        let redacted_endpoint = redact_identifier(&report.endpoint);
-        report.endpoint = redacted_endpoint.clone();
-        report.origin.endpoint = redacted_endpoint;
-        InitialExecution::Accepted {
-            accepted,
-            result: probe_result(
-                &request.request_id,
-                &report,
-                limits.maximum_response_bytes as usize,
-            ),
-        }
-    }
-
-    pub async fn execute_guarded_ipp_change_with_cancellation(
-        &self,
-        request: ProtocolRequest,
-        now_unix_ms: u64,
-        policy: &GuardedWritePolicy,
-        cancellation: CancellationToken,
-    ) -> InitialExecution {
-        if let Err(error) = validate_request(
-            &request,
-            now_unix_ms,
-            self.policy.maximum_timeout_ms,
-            self.policy.maximum_response_bytes,
-            &[OperationKind::PlanChange, OperationKind::ApplyChange],
-        ) {
-            return InitialExecution::Rejected(rejection(&request.request_id, error));
-        }
-        if request.contract_version != self.policy.contract_version {
-            return InitialExecution::Rejected(reject(
-                request.request_id,
-                RejectionReason::UnsupportedVersion,
-                "unsupported contract version",
-            ));
-        }
-        let printer = self
-            .printers
-            .read()
-            .expect("published-printer registry lock poisoned")
-            .get(&request.printer_id)
-            .cloned();
-        let Some(printer) = printer else {
-            return InitialExecution::Rejected(reject(
-                request.request_id,
-                RejectionReason::UnknownPrinter,
-                "unknown published printer",
-            ));
-        };
-        if printer.endpoint_generation != request.endpoint_generation {
-            return InitialExecution::Rejected(reject(
-                request.request_id,
-                RejectionReason::StaleEndpoint,
-                "stale endpoint generation",
-            ));
-        }
-        let operation = request.operation.clone().expect("validated operation");
-        let setting = match &operation {
-            protocol_request::Operation::PlanChange(operation) => &operation.setting_id,
-            protocol_request::Operation::ApplyChange(operation) => &operation.setting_id,
-            _ => unreachable!("guarded validation permits only change operations"),
-        };
-        if !policy.allowed_settings.contains(setting) {
-            return InitialExecution::Rejected(reject(
-                request.request_id,
-                RejectionReason::Unauthorized,
-                "setting is not authorized by local policy",
-            ));
-        }
-        if matches!(&operation, protocol_request::Operation::ApplyChange(_))
-            && !self
-                .guarded_write_requests
-                .lock()
-                .expect("guarded-write request registry lock poisoned")
-                .insert(request.request_id.clone())
-        {
-            return InitialExecution::Rejected(reject(
-                request.request_id,
-                RejectionReason::Policy,
-                "guarded write request ID was already consumed",
-            ));
-        }
-        let accepted = ProtocolRequestAccepted {
-            request_id: request.request_id.clone(),
-            accepted_at_unix_ms: now_unix_ms,
-        };
-        if cancellation.is_cancelled() {
-            return InitialExecution::Accepted {
-                accepted,
-                result: terminal(&request.request_id, ResultOutcome::Cancelled, "cancelled"),
-            };
-        }
-        let limits = request.limits.as_ref().expect("validated limits");
-        let inspect_limits = InspectLimits {
-            timeout: Duration::from_millis(limits.timeout_ms),
-            maximum_response_bytes: limits.maximum_response_bytes as usize,
-            codec: ipp::Limits {
-                max_message_bytes: limits.maximum_response_bytes as usize,
-                ..ipp::Limits::default()
-            },
-        };
-        let result = match operation {
-            protocol_request::Operation::PlanChange(operation) => {
-                self.plan_cloud_change(&request, &printer, operation, inspect_limits)
-                    .await
-            }
-            protocol_request::Operation::ApplyChange(operation) => {
-                self.apply_cloud_change(&request, &printer, operation, now_unix_ms, inspect_limits)
-                    .await
-            }
-            _ => unreachable!(),
-        };
-        InitialExecution::Accepted { accepted, result }
-    }
-
-    async fn plan_cloud_change(
-        &self,
-        request: &ProtocolRequest,
-        printer: &PublishedPrinter,
-        operation: PlanChange,
-        limits: InspectLimits,
-    ) -> ProtocolResult {
-        if operation.protocol != "ipp" {
-            return terminal(
-                &request.request_id,
-                ResultOutcome::Failed,
-                "protocol must be IPP",
-            );
-        }
-        let requested_value: Value = match serde_json::from_slice(&operation.requested_value) {
-            Ok(value) => value,
-            Err(_) => {
-                return terminal(
-                    &request.request_id,
-                    ResultOutcome::Failed,
-                    "requested IPP value is malformed",
-                );
-            }
-        };
-        let plan = match self
-            .client
-            .plan_change(
-                &printer.endpoint,
-                PlanChangeRequest {
-                    printer_id: &request.printer_id,
-                    endpoint_generation: request.endpoint_generation,
-                    setting: &operation.setting_id,
-                    requested_value,
-                    principal: &request.authenticated_principal,
-                    protocol: ProtocolFamily::Ipp,
-                    expires_at_unix_ms: request.expires_at_unix_ms,
-                },
-                limits,
-            )
-            .await
-        {
-            Ok(plan) => plan,
-            Err(NativePlanChangeError::Read(error)) => {
-                let (outcome, safe) = safe_client_error(&error);
-                return terminal(&request.request_id, outcome, safe);
-            }
-            Err(NativePlanChangeError::Endpoint(_)) => {
-                return terminal(
-                    &request.request_id,
-                    ResultOutcome::Failed,
-                    "published printer endpoint is invalid",
-                );
-            }
-            Err(
-                NativePlanChangeError::SupportedValues(_) | NativePlanChangeError::InvalidPlan(_),
-            ) => {
-                return terminal(
-                    &request.request_id,
-                    ResultOutcome::Rejected,
-                    "printer does not confirm this change",
-                );
-            }
-        };
-        let receipt = CloudChangeReceipt {
-            printer_id: plan.printer_id,
-            endpoint_generation: plan.endpoint_generation,
-            setting: plan.setting,
-            expected_old_value_hash: plan.expected_old_value_hash,
-            expected_requested_value_hash: ipp_value_hash(&plan.requested_protocol_value),
-            principal: plan.principal,
-            protocol: plan.protocol,
-            expires_at_unix_ms: plan.expires_at_unix_ms,
-        };
-        bounded_json_result(&request.request_id, &receipt, limits.maximum_response_bytes)
-    }
-
-    async fn apply_cloud_change(
-        &self,
-        request: &ProtocolRequest,
-        printer: &PublishedPrinter,
-        operation: ApplyChange,
-        now_unix_ms: u64,
-        limits: InspectLimits,
-    ) -> ProtocolResult {
-        if operation.protocol != "ipp"
-            || operation.expected_old_value_hash.len() != 32
-            || operation.expected_requested_value_hash.len() != 32
-            || operation.plan_expires_at_unix_ms > request.expires_at_unix_ms
-        {
-            return terminal(
-                &request.request_id,
-                ResultOutcome::Rejected,
-                "confirmed change fields are invalid",
-            );
-        }
-        let requested_value: Value = match serde_json::from_slice(&operation.requested_value) {
-            Ok(value) => value,
-            Err(_) => {
-                return terminal(
-                    &request.request_id,
-                    ResultOutcome::Rejected,
-                    "requested IPP value is malformed",
-                );
-            }
-        };
-        if operation.expected_requested_value_hash.as_slice() != ipp_value_hash(&requested_value) {
-            return terminal(
-                &request.request_id,
-                ResultOutcome::Rejected,
-                "requested value no longer matches the confirmation",
-            );
-        }
-        let mut expected_old_value_hash = [0; 32];
-        expected_old_value_hash.copy_from_slice(&operation.expected_old_value_hash);
-        let plan = match confirmed_ipp_plan_from_wire(
-            request.printer_id.clone(),
-            request.endpoint_generation,
-            operation.setting_id,
-            expected_old_value_hash,
-            requested_value,
-            request.authenticated_principal.clone(),
-            operation.plan_expires_at_unix_ms,
-        ) {
-            Ok(plan) => plan,
-            Err(_) => {
-                return terminal(
-                    &request.request_id,
-                    ResultOutcome::Rejected,
-                    "confirmed change value is invalid",
-                );
-            }
-        };
-        let outcome = self
-            .client
-            .apply_confirmed_change(
-                &printer.endpoint,
-                &plan,
-                ChangeBinding {
-                    printer_id: &request.printer_id,
-                    endpoint_generation: request.endpoint_generation,
-                    principal: &request.authenticated_principal,
-                    protocol: ProtocolFamily::Ipp,
-                    now_unix_ms,
-                },
-                limits,
-            )
-            .await;
-        match outcome {
-            Ok(ApplyChangeOutcome::Verified { .. }) => success_empty(&request.request_id),
-            Ok(ApplyChangeOutcome::Rejected { .. }) => terminal(
-                &request.request_id,
-                ResultOutcome::Rejected,
-                "printer rejected the change",
-            ),
-            Ok(ApplyChangeOutcome::ReadBackMismatch { .. }) => terminal(
-                &request.request_id,
-                ResultOutcome::Failed,
-                "post-write verification did not match",
-            ),
-            Ok(ApplyChangeOutcome::Ambiguous { .. }) => terminal(
-                &request.request_id,
-                ResultOutcome::AmbiguousWrite,
-                "write outcome is ambiguous and will not be retried",
-            ),
-            Err(_) => terminal(
-                &request.request_id,
-                ResultOutcome::Rejected,
-                "confirmed change became stale or could not be read",
-            ),
-        }
     }
 }
 
@@ -1046,8 +333,8 @@ fn output_authorized(mode: i32, policy: &AgentPolicy) -> bool {
     }
 }
 
-fn output_policy(mode: i32, policy: &AgentPolicy) -> (OutputMode, OutputAuthorization) {
-    match WireOutputMode::try_from(mode).expect("authorized output mode") {
+fn output_policy(mode: i32, policy: &AgentPolicy) -> Option<(OutputMode, OutputAuthorization)> {
+    Some(match WireOutputMode::try_from(mode).ok()? {
         WireOutputMode::NormalizedRedacted => (
             OutputMode::NormalizedRedacted,
             OutputAuthorization::default(),
@@ -1067,7 +354,7 @@ fn output_policy(mode: i32, policy: &AgentPolicy) -> (OutputMode, OutputAuthoriz
                 ..OutputAuthorization::default()
             },
         ),
-    }
+    })
 }
 
 fn request_number(request_id: &str) -> u32 {

@@ -19,6 +19,7 @@ jobs:
       - run: python3 scripts/generate_schema_projection.py --check
       - run: cargo test --workspace --all-features --locked
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps --locked
       - run: cargo check -p mb-printer-native --no-default-features --locked
       - run: cargo build -p mb-printer-wasm --target wasm32-unknown-unknown --release --locked
       - name: Build publishable crate archives in registry order

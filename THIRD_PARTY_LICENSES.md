@@ -400,6 +400,7 @@ AGPL-3.0-or-later.
 | windows_x86_64_msvc | 0.52.6 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs |
 | wit-bindgen | 0.57.1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | https://github.com/bytecodealliance/wit-bindgen |
 | writeable | 0.6.4 | Unicode-3.0 | https://github.com/unicode-org/icu4x |
+| wuff | 0.2.9 | MIT | https://github.com/nicoburns/wuff |
 | xml | 1.4.0 | MIT | https://github.com/kornelski/xml-rs |
 | xmlwriter | 0.1.0 | MIT | https://github.com/RazrFalcon/xmlwriter |
 | yoke | 0.8.3 | Unicode-3.0 | https://github.com/unicode-org/icu4x |

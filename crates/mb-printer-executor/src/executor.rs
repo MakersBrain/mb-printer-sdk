@@ -13,16 +13,22 @@ use crate::{
     TransportErrorKind, TransportFuture, WaitOutcome, WriteKind,
 };
 
+/// Maximum number of actions accepted by executor preflight.
 pub const MAX_PLAN_ACTIONS: usize = 16_384;
+/// Maximum total response bytes retained for one execution.
 pub const MAX_RETAINED_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_FIXED_RESPONSE_READS: usize = 16;
 const MAX_MULTIPART_READS: usize = 4096;
 
+/// Policy applied to reference delays embedded in a protocol plan.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ReferenceTiming {
+    /// Preserve every protocol-defined delay exactly.
     #[default]
     Preserve,
+    /// Add the given milliseconds to every reference delay.
     IncreaseBy(u64),
+    /// Reduce delays for explicit diagnostic use, never below zero.
     UnsafeDiagnosticReduceBy(u64),
 }
 
@@ -36,20 +42,34 @@ impl ReferenceTiming {
     }
 }
 
+/// Observable execution state completed before a result or failure.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Progress {
+    /// Zero-based index of the most recently completed action.
     pub last_completed_action: Option<usize>,
+    /// Total bytes confirmed written by the transport.
     pub bytes_written: u64,
+    /// Whether a failed or cancelled write may have reached the printer.
     pub potentially_accepted_write: bool,
+    /// Bounded response frames retained by collection actions.
     pub responses: Vec<Vec<u8>>,
 }
 
+/// Timing and cooperative-cancellation policy for plan execution.
 #[derive(Clone, Copy)]
 pub struct ExecutionOptions<'a> {
+    /// Adjustment applied to protocol reference delays.
     pub timing: ReferenceTiming,
+    /// Cancellation source observed at executor effect boundaries.
     pub cancellation: &'a dyn Cancellation,
 }
 
+/// Executes a preflighted plan with reference timing and no cancellation.
+///
+/// # Errors
+///
+/// Returns [`ExecuteError`] when preflight, transport I/O, timeout, or response
+/// validation fails. Writes are never retried.
 pub async fn execute<T>(plan: &Plan, transport: &mut T) -> Result<Progress, ExecuteError>
 where
     T: Transport + ?Sized,
@@ -67,6 +87,11 @@ where
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+/// Executes a native plan with explicit options and progress reporting.
+///
+/// # Errors
+///
+/// Returns [`ExecuteError`] under the same conditions as [`execute`].
 pub async fn execute_with_options<T, F>(
     plan: &Plan,
     transport: &mut T,
@@ -81,6 +106,11 @@ where
 }
 
 #[cfg(target_arch = "wasm32")]
+/// Executes a WebAssembly plan with explicit options and progress reporting.
+///
+/// # Errors
+///
+/// Returns [`ExecuteError`] under the same conditions as [`execute`].
 pub async fn execute_with_options<T, F>(
     plan: &Plan,
     transport: &mut T,
@@ -762,7 +792,7 @@ const fn execute_error_code(error: &ExecuteError) -> &'static str {
         ExecuteError::AtomicTooLarge { .. } => "atomic-too-large",
         ExecuteError::InvalidPlan { .. } => "invalid-plan",
         ExecuteError::Replay(_) => "replay",
-        ExecuteError::ReplayStore(_) => "replay-store",
+        ExecuteError::ReplayStore { .. } => "replay-store",
         ExecuteError::Cancelled { .. } => "cancelled",
         ExecuteError::WriteOutcomeUnknown { .. } => "write-outcome-unknown",
         ExecuteError::Transport { .. } => "transport",

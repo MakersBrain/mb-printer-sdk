@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+//! Native transports, discovery, blocking integration, and durable replay for
+//! the Makers' Brain printer SDK.
 #![deny(unsafe_op_in_unsafe_fn)]
 
 #[cfg(feature = "blocking")]
@@ -30,8 +32,8 @@ pub struct FileReplayStore {
 }
 
 impl FileReplayStore {
-    pub fn new(directory: impl AsRef<Path>) -> Result<Self, String> {
-        std::fs::create_dir_all(directory.as_ref()).map_err(|error| error.to_string())?;
+    pub fn new(directory: impl AsRef<Path>) -> std::io::Result<Self> {
+        std::fs::create_dir_all(directory.as_ref())?;
         Ok(Self {
             directory: directory.as_ref().to_owned(),
         })
@@ -39,7 +41,9 @@ impl FileReplayStore {
 }
 
 impl ReplayStore for FileReplayStore {
-    fn claim(&mut self, key: &str) -> Result<bool, String> {
+    type Error = std::io::Error;
+
+    fn claim(&mut self, key: &str) -> Result<bool, Self::Error> {
         let digest = format!("{:x}", Sha256::digest(key.as_bytes()));
         match OpenOptions::new()
             .write(true)
@@ -48,12 +52,11 @@ impl ReplayStore for FileReplayStore {
         {
             Ok(mut file) => {
                 file.write_all(key.as_bytes())
-                    .and_then(|()| file.sync_all())
-                    .map_err(|error| error.to_string())?;
+                    .and_then(|()| file.sync_all())?;
                 Ok(true)
             }
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
-            Err(error) => Err(error.to_string()),
+            Err(error) => Err(error),
         }
     }
 }

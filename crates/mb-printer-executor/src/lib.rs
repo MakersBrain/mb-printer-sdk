@@ -1,5 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+//! Runtime-independent asynchronous execution of validated printer action plans.
+//!
+//! Applications supply a [`Transport`] and own the async runtime. The executor
+//! preflights a complete plan, applies bounded writes and waits, reports progress,
+//! and never retries an action whose outcome may be ambiguous.
 #![deny(unsafe_op_in_unsafe_fn)]
+#![deny(missing_docs)]
 
 mod error;
 mod executor;
