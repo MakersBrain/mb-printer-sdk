@@ -5,9 +5,11 @@ use mb_printer_core::{
     protocol::brother::wifi::{PJL_FOOTER, PJL_HEADER, WirelessField},
 };
 use mb_printer_native::{
-    Transport, WaitOutcome,
+    NotificationSupport, Transport, TransportError, TransportErrorKind, TransportFuture,
+    WaitOutcome, WriteKind,
     brother_settings::{field_id, is_sensitive, retrieve_wireless_settings},
 };
+use std::time::Duration;
 
 #[derive(Default)]
 struct FakeObjbrnetTransport {
@@ -20,52 +22,75 @@ impl Transport for FakeObjbrnetTransport {
         4096
     }
 
-    fn subscribe_notifications(&mut self) -> Result<(), String> {
-        Ok(())
+    fn subscribe_notifications(
+        &mut self,
+    ) -> TransportFuture<'_, Result<NotificationSupport, TransportError>> {
+        Box::pin(async { Ok(NotificationSupport::Unavailable) })
     }
 
-    fn write(&mut self, bytes: &[u8]) -> Result<(), String> {
-        self.writes.push(bytes.to_vec());
-        if bytes == [0; 200] || bytes == b"\x1b@\x1bia\x01" || bytes == b"\x1biS" {
-            return Ok(());
-        }
-        let field = WirelessField::ALL
-            .into_iter()
-            .find(|field| {
-                bytes
-                    .windows(field.oid().len())
-                    .any(|part| part == field.oid().as_bytes())
-            })
-            .ok_or("request did not contain an allowlisted OID")?;
-        let value = match field {
-            WirelessField::Connected => "1",
-            WirelessField::Ipv4 => "c0-a8-01-2a",
-            WirelessField::Ssid => "-54-65-73-74",
-            WirelessField::Encryption => "4",
-            WirelessField::Authentication => "19",
-            WirelessField::Infrastructure => "1",
-            WirelessField::WirelessDirect => "0",
-        };
-        self.pending =
-            Some(format!("@PJL INFO OBJBRNET\r\n\"{}:{value}\"\r\n", field.oid()).into_bytes());
-        Ok(())
+    fn write<'a>(
+        &'a mut self,
+        bytes: &'a [u8],
+        _: WriteKind,
+    ) -> TransportFuture<'a, Result<(), TransportError>> {
+        Box::pin(async move {
+            self.writes.push(bytes.to_vec());
+            if bytes == [0; 200] || bytes == b"\x1b@\x1bia\x01" || bytes == b"\x1biS" {
+                return Ok(());
+            }
+            let field = WirelessField::ALL
+                .into_iter()
+                .find(|field| {
+                    bytes
+                        .windows(field.oid().len())
+                        .any(|part| part == field.oid().as_bytes())
+                })
+                .ok_or_else(|| {
+                    TransportError::new(
+                        TransportErrorKind::InvalidConfiguration,
+                        "request did not contain an allowlisted OID",
+                    )
+                })?;
+            let value = match field {
+                WirelessField::Connected => "1",
+                WirelessField::Ipv4 => "c0-a8-01-2a",
+                WirelessField::Ssid => "-54-65-73-74",
+                WirelessField::Encryption => "4",
+                WirelessField::Authentication => "19",
+                WirelessField::Infrastructure => "1",
+                WirelessField::WirelessDirect => "0",
+            };
+            self.pending =
+                Some(format!("@PJL INFO OBJBRNET\r\n\"{}:{value}\"\r\n", field.oid()).into_bytes());
+            Ok(())
+        })
     }
 
-    fn delay_monotonic(&mut self, _: u64) {}
+    fn delay(&mut self, _: Duration) -> TransportFuture<'_, ()> {
+        Box::pin(async {})
+    }
 
-    fn wait_response(&mut self, _: u64) -> Result<WaitOutcome, String> {
-        Ok(self
-            .pending
-            .take()
-            .map(WaitOutcome::Response)
-            .unwrap_or(WaitOutcome::Timeout))
+    fn wait_response(
+        &mut self,
+        _: Duration,
+    ) -> TransportFuture<'_, Result<WaitOutcome, TransportError>> {
+        Box::pin(async move {
+            Ok(self
+                .pending
+                .take()
+                .map(WaitOutcome::Response)
+                .unwrap_or(WaitOutcome::Timeout))
+        })
+    }
+    fn disconnect(&mut self) -> TransportFuture<'_, Result<(), TransportError>> {
+        Box::pin(async { Ok(()) })
     }
 }
 
-#[test]
-fn retrieval_uses_only_the_fixed_read_only_allowlist() {
+#[tokio::test]
+async fn retrieval_uses_only_the_fixed_read_only_allowlist() {
     let mut transport = FakeObjbrnetTransport::default();
-    let inspection = retrieve_wireless_settings(&mut transport);
+    let inspection = retrieve_wireless_settings(&mut transport).await;
 
     assert_eq!(inspection.observations.len(), WirelessField::ALL.len());
     assert_eq!(transport.writes.len(), WirelessField::ALL.len() * 4);

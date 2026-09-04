@@ -9,6 +9,7 @@
     {
       "id": "p12",
       "name": "P12 / P12 Pro",
+      "ble": {"kind": "gatt", "capabilities": {"writeCharacteristic": "0000ff02-0000-1000-8000-00805f9b34fb", "writeType": "without-response", "notification": {"characteristic": "0000ff03-0000-1000-8000-00805f9b34fb", "requirement": "optional"}}},
       "group": "Tape Printers",
       "description": "12mm continuous tape label maker",
       "protocol": "p12",
@@ -32,6 +33,7 @@
     {
       "id": "a30",
       "name": "A30",
+      "ble": {"kind": "gatt", "capabilities": {"writeCharacteristic": "0000ff02-0000-1000-8000-00805f9b34fb", "writeType": "without-response", "notification": {"characteristic": "0000ff03-0000-1000-8000-00805f9b34fb", "requirement": "optional"}}},
       "group": "Tape Printers",
       "description": "12-15mm continuous tape, faster print speed",
       "protocol": "p12",
@@ -55,6 +57,7 @@
     {
       "id": "m02",
       "name": "M02 / M02S / M02X",
+      "ble": {"kind": "gatt", "capabilities": {"writeCharacteristic": "0000ff02-0000-1000-8000-00805f9b34fb", "writeType": "without-response", "notification": {"characteristic": "0000ff03-0000-1000-8000-00805f9b34fb", "requirement": "optional"}}},
       "group": "M02 Series",
       "description": "Mini pocket printers (48mm, continuous paper)",
       "protocol": "m02",
@@ -76,6 +79,7 @@
     {
       "id": "m02-pro",
       "name": "M02 Pro",
+      "ble": {"kind": "gatt", "capabilities": {"writeCharacteristic": "0000ff02-0000-1000-8000-00805f9b34fb", "writeType": "without-response", "notification": {"characteristic": "0000ff03-0000-1000-8000-00805f9b34fb", "requirement": "optional"}}},
       "group": "M02 Series",
       "description": "300 DPI high-resolution mini printer (53mm)",
       "protocol": "m02",
@@ -96,6 +100,7 @@
     {
       "id": "m03",
       "name": "M03",
+      "ble": {"kind": "gatt", "capabilities": {"writeCharacteristic": "0000ff02-0000-1000-8000-00805f9b34fb", "writeType": "without-response", "notification": {"characteristic": "0000ff03-0000-1000-8000-00805f9b34fb", "requirement": "optional"}}},
       "group": "M03 Series",
       "description": "Mini sticker printer (53mm)",
       "protocol": "m-series",
@@ -115,6 +120,7 @@
     {
       "id": "t02",
       "name": "T02",
+      "ble": {"kind": "gatt", "capabilities": {"writeCharacteristic": "0000ff02-0000-1000-8000-00805f9b34fb", "writeType": "without-response", "notification": {"characteristic": "0000ff03-0000-1000-8000-00805f9b34fb", "requirement": "optional"}}},
       "group": "T02 Series",
       "description": "Mini sticker printer (48mm)",
       "protocol": "m-series",
@@ -134,6 +140,7 @@
     {
       "id": "m04s-53",
       "name": "M04S - 53mm paper",
+      "ble": {"kind": "gatt", "capabilities": {"writeCharacteristic": "0000ff02-0000-1000-8000-00805f9b34fb", "writeType": "without-response", "notification": {"characteristic": "0000ff03-0000-1000-8000-00805f9b34fb", "requirement": "optional"}}},
       "group": "M04 Series",
       "description": "300 DPI multi-width printer set to 53mm",
       "protocol": "m04",
@@ -154,6 +161,7 @@
     {
       "id": "m04s-80",
       "name": "M04S - 80mm paper",
+      "ble": {"kind": "gatt", "capabilities": {"writeCharacteristic": "0000ff02-0000-1000-8000-00805f9b34fb", "writeType": "without-response", "notification": {"characteristic": "0000ff03-0000-1000-8000-00805f9b34fb", "requirement": "optional"}}},
       "group": "M04 Series",
       "description": "300 DPI multi-width printer set to 80mm",
       "protocol": "m04",
@@ -171,6 +179,7 @@
     {
       "id": "m04s-110",
       "name": "M04S - 110mm paper",
+      "ble": {"kind": "gatt", "capabilities": {"writeCharacteristic": "0000ff02-0000-1000-8000-00805f9b34fb", "writeType": "without-response", "notification": {"characteristic": "0000ff03-0000-1000-8000-00805f9b34fb", "requirement": "optional"}}},
       "group": "M04 Series",
       "description": "300 DPI multi-width printer set to 110mm",
       "protocol": "m04",
@@ -188,6 +197,7 @@
     {
       "id": "m110",
       "name": "M110 / M120",
+      "ble": {"kind": "gatt", "capabilities": {"writeCharacteristic": "0000ff02-0000-1000-8000-00805f9b34fb", "writeType": "without-response", "notification": {"characteristic": "0000ff03-0000-1000-8000-00805f9b34fb", "requirement": "optional"}}},
       "group": "M110 Series",
       "description": "Narrow label makers, right-aligned roll (48mm)",
       "protocol": "m110",
@@ -208,6 +218,7 @@
     {
       "id": "m110s",
       "name": "M110S",
+      "ble": {"kind": "gatt", "capabilities": {"writeCharacteristic": "0000ff02-0000-1000-8000-00805f9b34fb", "writeType": "without-response", "notification": {"characteristic": "0000ff03-0000-1000-8000-00805f9b34fb", "requirement": "required"}, "flowControl": "phomemo-credit"}},
       "group": "M110 Series",
       "description": "Narrow label maker, right-aligned roll (48mm)",
       "protocol": "m110",
@@ -225,6 +236,7 @@
     {
       "id": "m200",
       "name": "M200",
+      "ble": {"kind": "gatt", "capabilities": {"writeCharacteristic": "0000ff02-0000-1000-8000-00805f9b34fb", "writeType": "without-response", "notification": {"characteristic": "0000ff03-0000-1000-8000-00805f9b34fb", "requirement": "optional"}}},
       "group": "M200 Series",
       "description": "Mid-size label maker (75mm)",
       "protocol": "m-series",
@@ -244,6 +256,7 @@
     {
       "id": "m250",
       "name": "M250",
+      "ble": {"kind": "gatt", "capabilities": {"writeCharacteristic": "0000ff02-0000-1000-8000-00805f9b34fb", "writeType": "without-response", "notification": {"characteristic": "0000ff03-0000-1000-8000-00805f9b34fb", "requirement": "optional"}}},
       "group": "M200 Series",
       "description": "Mid-size label maker (75mm label, 72-byte width)",
       "protocol": "m-series",
@@ -263,6 +276,7 @@
     {
       "id": "m220",
       "name": "M220",
+      "ble": {"kind": "gatt", "capabilities": {"writeCharacteristic": "0000ff02-0000-1000-8000-00805f9b34fb", "writeType": "without-response", "notification": {"characteristic": "0000ff03-0000-1000-8000-00805f9b34fb", "requirement": "optional"}}},
       "group": "M200 Series",
       "description": "Wide label maker, right-aligned roll (75mm)",
       "protocol": "m-series",
@@ -282,6 +296,7 @@
     {
       "id": "m221",
       "name": "M221",
+      "ble": {"kind": "gatt", "capabilities": {"writeCharacteristic": "0000ff02-0000-1000-8000-00805f9b34fb", "writeType": "without-response", "notification": {"characteristic": "0000ff03-0000-1000-8000-00805f9b34fb", "requirement": "optional"}}},
       "group": "M200 Series",
       "description": "Wide label maker, centered roll (75mm)",
       "protocol": "m-series",
@@ -301,6 +316,7 @@
     {
       "id": "m260",
       "name": "M260",
+      "ble": {"kind": "gatt", "capabilities": {"writeCharacteristic": "0000ff02-0000-1000-8000-00805f9b34fb", "writeType": "without-response", "notification": {"characteristic": "0000ff03-0000-1000-8000-00805f9b34fb", "requirement": "optional"}}},
       "group": "M200 Series",
       "description": "Wide label maker (72mm)",
       "protocol": "m-series",
@@ -320,6 +336,7 @@
     {
       "id": "pm241",
       "name": "PM-241-BT",
+      "ble": {"kind": "gatt", "capabilities": {"writeCharacteristic": "0000ff02-0000-1000-8000-00805f9b34fb", "writeType": "without-response", "notification": {"characteristic": "0000ff03-0000-1000-8000-00805f9b34fb", "requirement": "optional"}}},
       "group": "PM-241 Series",
       "description": "4-inch shipping label printer (102mm, USB)",
       "protocol": "tspl",
@@ -341,6 +358,7 @@
     {
       "id": "d-series",
       "name": "D30 / D35 / D50 / Q30 / Q30S",
+      "ble": {"kind": "gatt", "capabilities": {"writeCharacteristic": "0000ff02-0000-1000-8000-00805f9b34fb", "writeType": "without-response", "notification": {"characteristic": "0000ff03-0000-1000-8000-00805f9b34fb", "requirement": "optional"}}},
       "group": "D-Series",
       "description": "Smart mini label makers (rotated protocol)",
       "protocol": "d-series",
@@ -399,6 +417,7 @@
       ],
       "id": "ql-1110nwb",
       "name": "Brother QL-1110NWB",
+      "ble": {"kind": "unsupported"},
       "description": "4in DK label printer, 300dpi, USB / network / Bluetooth",
       "namePatterns": [
         "QL-1110NWB",
@@ -443,6 +462,7 @@
       ],
       "id": "ql-1115nwb",
       "name": "Brother QL-1115NWB",
+      "ble": {"kind": "unsupported"},
       "description": "4in DK label printer, 300dpi",
       "namePatterns": [
         "QL-1115NWB",
@@ -483,6 +503,7 @@
       ],
       "id": "ql-1100",
       "name": "Brother QL-1100",
+      "ble": {"kind": "unsupported"},
       "description": "4in DK label printer, 300dpi, USB",
       "namePatterns": [
         "QL-1100",

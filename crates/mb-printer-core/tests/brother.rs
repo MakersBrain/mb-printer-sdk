@@ -89,11 +89,45 @@ fn captured_brother_status_decodes() {
         (s.media_width_mm, s.media_length_mm, s.media_type),
         (62, 29, "die-cut")
     );
+    assert_eq!(
+        (s.series_code, s.model_code, s.country_code),
+        (0x34, 0x44, 0x30)
+    );
+    assert_eq!(s.status_byte_14, 3);
+    assert_eq!(s.phase_number, 0);
     assert!(s.errors.is_empty());
     assert!(protocol::brother_parse_status(&[0; 32]).is_err());
     let mut trailing = b.to_vec();
     trailing.push(0);
     assert!(protocol::brother_parse_status(&trailing).is_err());
+}
+
+#[test]
+fn brother_status_preserves_async_state_and_unknown_wire_fields() {
+    let mut bytes = [0_u8; 32];
+    bytes[..6].copy_from_slice(&[0x80, 0x20, 0x42, 0x34, 0x45, 0x30]);
+    bytes[8] = 0x40;
+    bytes[9] = 0x08;
+    bytes[18] = 4;
+    bytes[19] = 1;
+    bytes[20..22].copy_from_slice(&0x1234_u16.to_le_bytes());
+    bytes[22] = 7;
+    bytes[24] = 9;
+    bytes[27..30].copy_from_slice(&[1, 2, 3]);
+
+    let status = protocol::brother_parse_status(&bytes).unwrap();
+    assert_eq!(status.status_type, "turned off");
+    assert_eq!(status.phase, "printing");
+    assert_eq!(status.phase_number, 0x1234);
+    assert_eq!(status.notification_number, 7);
+    assert_eq!(status.extension_status, 9);
+    assert_eq!(status.tape_info, [1, 2, 3]);
+    assert_eq!(status.error_bytes, [0x40, 0x08]);
+    assert!(status.errors.is_empty());
+    let json = serde_json::to_value(&status).unwrap();
+    assert_eq!(json["phaseNumber"], 0x1234);
+    assert_eq!(json["statusByte14"], 0);
+    assert_eq!(json["tapeInfo"], serde_json::json!([1, 2, 3]));
 }
 
 #[test]

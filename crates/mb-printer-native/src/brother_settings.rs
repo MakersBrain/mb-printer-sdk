@@ -7,7 +7,7 @@ use mb_printer_core::{
 };
 use std::time::{Duration, Instant};
 
-use crate::{Transport, WaitOutcome};
+use crate::{Transport, WaitOutcome, WriteKind};
 
 /// The largest response retained for any single OBJBRNET inquiry.
 pub const MAX_RESPONSE_BYTES: usize = 4_000;
@@ -43,55 +43,55 @@ pub struct BrotherSettingsInspection {
 /// Each field is queried independently so unsupported fields are reported
 /// without hiding later observations. No mutation command and no credential
 /// or arbitrary-OID query can be constructed through this API.
-pub fn retrieve_wireless_settings<T: Transport>(transport: &mut T) -> BrotherSettingsInspection {
+pub async fn retrieve_wireless_settings<T: Transport>(
+    transport: &mut T,
+) -> BrotherSettingsInspection {
     // Brother's helper vacuums the input before beginning. This is important
     // on USB, where a previous timed-out command can leave a late reply queued.
-    let drain_error = drain_stale_responses(transport).err();
-    let observations = WirelessField::ALL
-        .into_iter()
-        .map(|field| {
-            if let Some(error) = &drain_error {
-                return failed_observation(field, format!("input drain failed: {error}"));
-            }
-            retrieve_field(transport, field)
-        })
-        .collect();
+    let drain_error = drain_stale_responses(transport).await.err();
+    let mut observations = Vec::with_capacity(WirelessField::ALL.len());
+    for field in WirelessField::ALL {
+        observations.push(match &drain_error {
+            Some(error) => failed_observation(field, format!("input drain failed: {error}")),
+            None => retrieve_field(transport, field).await,
+        });
+    }
     BrotherSettingsInspection { observations }
 }
 
 /// Retrieves every field using a fresh transport, matching a print spooler's
 /// one-job-per-query lifecycle. This is the preferred raw TCP/USB adapter when
 /// the firmware stops processing after returning one PJL response.
-pub fn retrieve_wireless_settings_with<T, F>(mut open: F) -> BrotherSettingsInspection
+pub async fn retrieve_wireless_settings_with<T, F>(mut open: F) -> BrotherSettingsInspection
 where
     T: Transport,
     F: FnMut() -> Result<T, String>,
 {
-    let observations = WirelessField::ALL
-        .into_iter()
-        .map(|field| match open() {
+    let mut observations = Vec::with_capacity(WirelessField::ALL.len());
+    for field in WirelessField::ALL {
+        observations.push(match open() {
             // A newly opened raw-print socket has no stale input. Reading
             // before its first write can make strict port-9100 firmware close
             // what it sees as an empty job.
-            Ok(mut transport) => retrieve_field(&mut transport, field),
+            Ok(mut transport) => retrieve_field(&mut transport, field).await,
             Err(error) => failed_observation(field, error),
-        })
-        .collect();
+        });
+    }
     BrotherSettingsInspection { observations }
 }
 
 /// Retrieves one known field after discarding any bounded stale input.
-pub fn retrieve_wireless_setting<T: Transport>(
+pub async fn retrieve_wireless_setting<T: Transport>(
     transport: &mut T,
     field: WirelessField,
 ) -> BrotherSettingObservation {
-    match drain_stale_responses(transport) {
-        Ok(()) => retrieve_field(transport, field),
+    match drain_stale_responses(transport).await {
+        Ok(()) => retrieve_field(transport, field).await,
         Err(error) => failed_observation(field, format!("input drain failed: {error}")),
     }
 }
 
-fn retrieve_field<T: Transport>(
+async fn retrieve_field<T: Transport>(
     transport: &mut T,
     field: WirelessField,
 ) -> BrotherSettingObservation {
@@ -107,24 +107,27 @@ fn retrieve_field<T: Transport>(
     }
     let mut last_error = "response timed out".to_owned();
     for _ in 0..MAX_ATTEMPTS {
-        if let Err(error) = transport.write(&command) {
-            last_error = error;
+        if let Err(error) = transport.write(&command, WriteKind::Command).await {
+            last_error = error.to_string();
             continue;
         }
-        if let Err(error) = transport.write(&[0; INVALIDATE_BYTES]) {
-            last_error = error;
+        if let Err(error) = transport
+            .write(&[0; INVALIDATE_BYTES], WriteKind::Command)
+            .await
+        {
+            last_error = error.to_string();
             continue;
         }
-        if let Err(error) = transport.write(STATUS_PREAMBLE) {
-            last_error = error;
+        if let Err(error) = transport.write(STATUS_PREAMBLE, WriteKind::Command).await {
+            last_error = error.to_string();
             continue;
         }
-        transport.delay_monotonic(100);
-        if let Err(error) = transport.write(STATUS_REQUEST) {
-            last_error = error;
+        transport.delay(Duration::from_millis(100)).await;
+        if let Err(error) = transport.write(STATUS_REQUEST, WriteKind::Command).await {
+            last_error = error.to_string();
             continue;
         }
-        match read_matching_response(transport, field) {
+        match read_matching_response(transport, field).await {
             Ok(response) => {
                 observation.raw_response = Some(response.clone());
                 observation.value = decode_field(field, &response);
@@ -160,10 +163,14 @@ fn failed_observation(field: WirelessField, error: String) -> BrotherSettingObse
     }
 }
 
-fn drain_stale_responses<T: Transport>(transport: &mut T) -> Result<(), String> {
+async fn drain_stale_responses<T: Transport>(transport: &mut T) -> Result<(), String> {
     let mut drained = 0usize;
     loop {
-        match transport.wait_response(DRAIN_TIMEOUT_MS)? {
+        match transport
+            .wait_response(Duration::from_millis(DRAIN_TIMEOUT_MS))
+            .await
+            .map_err(|error| error.to_string())?
+        {
             WaitOutcome::Response(bytes) => {
                 drained = drained
                     .checked_add(bytes.len())
@@ -177,7 +184,7 @@ fn drain_stale_responses<T: Transport>(transport: &mut T) -> Result<(), String> 
     }
 }
 
-fn read_matching_response<T: Transport>(
+async fn read_matching_response<T: Transport>(
     transport: &mut T,
     field: WirelessField,
 ) -> Result<Vec<u8>, String> {
@@ -188,7 +195,11 @@ fn read_matching_response<T: Transport>(
         let timeout_ms = u64::try_from(remaining.as_millis())
             .unwrap_or(u64::MAX)
             .max(1);
-        match transport.wait_response(timeout_ms)? {
+        match transport
+            .wait_response(Duration::from_millis(timeout_ms))
+            .await
+            .map_err(|error| error.to_string())?
+        {
             WaitOutcome::Response(bytes) => {
                 if response.len().saturating_add(bytes.len()) > MAX_RESPONSE_BYTES {
                     return Err("response exceeded 4000-byte limit".into());

@@ -44,3 +44,26 @@ fn svg_external_resources_are_rejected() {
     let svg=br#"<svg xmlns="http://www.w3.org/2000/svg" width="4" height="3"><image href="https://example.test/a.png"/></svg>"#;
     assert!(resources::normalize(&resource("image/svg+xml", svg), 100).is_err())
 }
+
+#[test]
+fn transparent_png_pixels_flatten_to_white() {
+    let mut png = Vec::new();
+    // transparent black, opaque black, half-transparent black, opaque white
+    image::codecs::png::PngEncoder::new(&mut png)
+        .write_image(
+            &[0, 0, 0, 0, 0, 0, 0, 255, 0, 0, 0, 128, 255, 255, 255, 255],
+            2,
+            2,
+            image::ExtendedColorType::Rgba8,
+        )
+        .unwrap();
+    let raster = resources::normalize(&resource("image/png", &png), 100).unwrap();
+    assert_eq!(raster.pixels[0], 255);
+    assert_eq!(raster.pixels[1], 0);
+    assert!(
+        (120..=135).contains(&raster.pixels[2]),
+        "{}",
+        raster.pixels[2]
+    );
+    assert_eq!(raster.pixels[3], 255);
+}

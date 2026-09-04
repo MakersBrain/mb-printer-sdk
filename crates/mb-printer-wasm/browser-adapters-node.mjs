@@ -1,6 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { executePlan } from "./dist/browser-adapters.js";
 import assert from "node:assert/strict";
+import { createRequire } from "node:module";
+import { WebBluetoothTransport } from "./dist/browser-adapters.js";
+
+const require = createRequire(import.meta.url);
+const wasm = require(process.argv[2] ?? "../../target/wasm-node-pkg/mb_printer_wasm.js");
+const executePlan = (actions, transport, progress, signal, timing = {}) => wasm.executePlan(
+  JSON.stringify({protocol:"m-series",source_commit:"wasm-node-fixture",actions}),
+  transport,
+  timing,
+  signal,
+  progress,
+);
 
 const command = bytes => ({action:"command-write",name:"test",bytes,atomic:true});
 const wait = (validation="any-notification", fallback_delay_ms=0) =>
@@ -13,7 +24,7 @@ const transport = (response={kind:"unavailable"}) => ({
 });
 
 const atomic = transport();
-await assert.rejects(() => executePlan([command([1]), command([1,2,3,4,5])], atomic));
+assert.equal((await executePlan([command([1]), command([1,2,3,4,5])], atomic)).status,"failed");
 assert.deepEqual(atomic.calls, [], "whole-plan preflight must precede transport access");
 
 let mock = transport({kind:"response",bytes:Uint8Array.of(7)});
@@ -22,12 +33,12 @@ const brother = new Uint8Array(32); brother.set([0x80,0x20,0x42]);
 mock = transport({kind:"response",bytes:brother});
 assert.equal((await executePlan([command([1]),wait("brother-status32")],mock)).status,"completed");
 mock = transport({kind:"response",bytes:new Uint8Array(31)});
-assert.equal((await executePlan([command([1]),wait("brother-status32")],mock)).status,"outcome-unknown");
+assert.equal((await executePlan([command([1]),wait("brother-status32")],mock)).status,"failed");
 mock = transport({kind:"response",bytes:new Uint8Array(32)});
-assert.equal((await executePlan([command([1]),wait("brother-status32")],mock)).status,"outcome-unknown");
+assert.equal((await executePlan([command([1]),wait("brother-status32")],mock)).status,"failed");
 const trailingBrother = new Uint8Array(33); trailingBrother.set([0x80,0x20,0x42]);
 mock = transport({kind:"response",bytes:trailingBrother});
-assert.equal((await executePlan([command([1]),wait("brother-status32")],mock)).status,"outcome-unknown");
+assert.equal((await executePlan([command([1]),wait("brother-status32")],mock)).status,"failed");
 mock = transport({kind:"unavailable"});
 assert.equal((await executePlan([wait("any-notification",1)],mock)).status,"completed");
 mock = transport({kind:"timeout"});
@@ -62,7 +73,7 @@ for (const failedOperation of ["subscribe","write","wait"]) {
     async waitForResponse(){this.calls.push("wait");if(failedOperation==="wait")throw new Error("disconnect");return {kind:"response",bytes:Uint8Array.of(1)}},
   };
   const result = await executePlan(boundaryPlan,disconnected);
-  assert.equal(result.status,failedOperation==="subscribe"?"cancelled-before-send":"outcome-unknown");
+  assert.equal(result.status,failedOperation==="write"?"outcome-unknown":"failed");
   assert.equal(disconnected.calls.at(-1),failedOperation,"execution stops exactly at the failed boundary");
 }
 const everyEffectPlan=[{action:"subscribe-notifications"},command([1]),{action:"raster-write",bytes:[2,3,4,5],logical_chunk:4,delay_after_each_physical_write_ms:0},wait()];
@@ -92,4 +103,32 @@ mock = {...transport(), async write() { writes++; await new Promise(resolve => s
 setTimeout(() => controller.abort(),2);
 const unknown = await executePlan([command([1])],mock,undefined,controller.signal);
 assert.equal(unknown.status,"outcome-unknown"); assert.equal(writes,1,"ambiguous write must not retry");
+
+class MockCharacteristic extends EventTarget {
+  writes = [];
+  value = null;
+  async startNotifications() { return this; }
+  async writeValueWithoutResponse(bytes) { this.writes.push([...new Uint8Array(bytes)]); }
+  notify(bytes) {
+    const value = Uint8Array.from(bytes);
+    this.value = new DataView(value.buffer);
+    this.dispatchEvent(new Event("characteristicvaluechanged"));
+  }
+}
+const writable = new MockCharacteristic(), notifications = new MockCharacteristic();
+const creditTransport = new WebBluetoothTransport(writable, notifications, 64, "phomemo-credit");
+await creditTransport.subscribeNotifications();
+let settled = false;
+const creditedWrite = creditTransport.write(Uint8Array.of(1,2,3)).then(() => { settled = true; });
+await Promise.resolve();
+assert.equal(settled, false, "credit-controlled write must wait for a grant");
+notifications.notify([0x02, 20, 0]);
+notifications.notify([0x01, 1]);
+await creditedWrite;
+assert.deepEqual(writable.writes, [[1,2,3]]);
+assert.equal(creditTransport.payloadLimit, 20);
+notifications.notify([0x1a,0x08,0xa2]);
+assert.deepEqual(await creditTransport.waitForResponse(10), {
+  kind: "response", bytes: Uint8Array.of(0x1a,0x08,0xa2),
+});
 console.log("Node browser-adapter execution semantics passed");

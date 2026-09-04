@@ -326,9 +326,12 @@ fn auto_height_dots(
             .iter()
             .find(|resource| resource.id == *id)
             .ok_or_else(|| RenderError::Resource(id.clone()))?;
-        let bytes = resource
-            .decoded_bytes_with_limits(limits)
-            .map_err(|_| RenderError::Font(id.clone()))?;
+        let bytes = sfnt_bytes(
+            resource
+                .decoded_bytes_with_limits(limits)
+                .map_err(|_| RenderError::Font(id.clone()))?,
+            limits,
+        )?;
         let face = rustybuzz::Face::from_slice(&bytes, 0)
             .ok_or_else(|| RenderError::Font("cannot parse OpenType face".into()))?;
         embedded_wrap(&face, text, size, placement.w).len() as i32 * size
@@ -809,9 +812,12 @@ fn draw_at(
                     .iter()
                     .find(|r| r.id == *id)
                     .ok_or_else(|| RenderError::Resource(id.clone()))?;
-                let bytes = resource
-                    .decoded_bytes_with_limits(limits)
-                    .map_err(|_| RenderError::Font(id.clone()))?;
+                let bytes = sfnt_bytes(
+                    resource
+                        .decoded_bytes_with_limits(limits)
+                        .map_err(|_| RenderError::Font(id.clone()))?,
+                    limits,
+                )?;
                 text_embedded(c, layout, value, &bytes)?
             } else {
                 text(c, layout, value)
@@ -1127,6 +1133,23 @@ struct TextLayout {
     vertical: VerticalAlign,
     overflow: TextOverflow,
 }
+/// WOFF and WOFF2 are containers around an sfnt font; shaping and rasterising read the sfnt itself,
+/// so a web face is unwrapped here rather than rejected as unparseable.
+fn sfnt_bytes(bytes: Vec<u8>, limits: &ProcessingLimits) -> Result<Vec<u8>, RenderError> {
+    let unwrapped = match bytes.first_chunk::<4>() {
+        Some(b"wOFF") => wuff::decompress_woff1(&bytes)
+            .map_err(|_| RenderError::Font("cannot decode WOFF face".into()))?,
+        Some(b"wOF2") => wuff::decompress_woff2(&bytes)
+            .map_err(|_| RenderError::Font("cannot decode WOFF2 face".into()))?,
+        _ => return Ok(bytes),
+    };
+    // A compressed face must not expand past the budget a decoded resource is allowed.
+    if unwrapped.len() > limits.max_decoded_resource_bytes {
+        return Err(RenderError::Font("decoded face is too large".into()));
+    }
+    Ok(unwrapped)
+}
+
 fn text_embedded(
     c: &mut GrayRaster,
     mut layout: TextLayout,

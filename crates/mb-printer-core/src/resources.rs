@@ -58,16 +58,14 @@ fn decode_image(bytes: &[u8], max_pixels: u64) -> Result<GrayRaster, ResourceErr
     decode_limits.max_image_height = Some(maximum_dimension);
     decode_limits.max_alloc = max_pixels.checked_mul(8);
     reader.limits(decode_limits);
-    let img = reader
-        .decode()
-        .map_err(|error| {
-            if matches!(error, image::ImageError::Limits(_)) {
-                ResourceError::TooLarge
-            } else {
-                ResourceError::Image(error)
-            }
-        })?
-        .to_luma8();
+    let img = reader.decode().map_err(|error| {
+        if matches!(error, image::ImageError::Limits(_)) {
+            ResourceError::TooLarge
+        } else {
+            ResourceError::Image(error)
+        }
+    })?;
+    let img = flatten_on_white(img);
     if img.width() as u64 * img.height() as u64 > max_pixels {
         return Err(ResourceError::TooLarge);
     }
@@ -76,6 +74,26 @@ fn decode_image(bytes: &[u8], max_pixels: u64) -> Result<GrayRaster, ResourceErr
         height: img.height(),
         pixels: img.into_raw(),
     })
+}
+/// Thermal output has no transparency, so translucent pixels are composited
+/// over white before the luminance conversion. Plain `to_luma8` would drop the
+/// alpha channel and turn a transparent-black background into solid black.
+fn flatten_on_white(image: image::DynamicImage) -> image::GrayImage {
+    if !image.color().has_alpha() {
+        return image.to_luma8();
+    }
+    let rgba = image.to_rgba8();
+    let (width, height) = rgba.dimensions();
+    let pixels = rgba
+        .pixels()
+        .map(|pixel| {
+            let [r, g, b, a] = pixel.0;
+            let luma = (2126 * u32::from(r) + 7152 * u32::from(g) + 722 * u32::from(b)) / 10_000;
+            let alpha = u32::from(a);
+            ((luma * alpha + 255 * (255 - alpha) + 127) / 255) as u8
+        })
+        .collect();
+    image::GrayImage::from_raw(width, height, pixels).expect("dimensions match pixel count")
 }
 /// SVG encoded bytes and output pixels are bounded before allocation. `usvg`
 /// does not expose a node-count/depth limiter, so parser complexity inside an

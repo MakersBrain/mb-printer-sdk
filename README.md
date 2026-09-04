@@ -2,8 +2,37 @@
 # Makers' Brain printer SDK
 
 Deterministic Rust foundations for `.mb-label.json` v4 documents and thermal
-printer protocol execution. The workspace separates portable core logic,
-native action execution, and browser/WASM bindings.
+printer protocol execution. The workspace has six crates with one-way dependency
+flow from contracts and portable domain logic toward platform integration:
+
+- `mb-printer-core` owns printer models, BLE profiles, rendering, and protocol plans.
+- `mb-printer-executor` owns the runtime-independent asynchronous transport
+  contract and the single plan executor.
+- `mb-printer-native` supplies Tokio-native BLE, TCP, USB, serial, and file
+  transports plus an optional native-only blocking facade.
+- `mb-printer-wasm` bridges JavaScript transports into that same Rust executor;
+  its TypeScript adapters contain browser I/O only.
+- `mb-printer-agent-proto` owns the versioned protobuf contract and its
+  fail-closed request validation.
+- `mb-printer-agent` is the native policy boundary that resolves published
+  printers and delegates authorized operations to native transports.
+
+`mb-printer-core` has no dependency on an async runtime or platform transport.
+Both native and WebAssembly adapters depend on the shared executor; the executor
+depends only on portable core plans. The agent depends on the protocol contract,
+core policy types, and native integration layer.
+
+Async execution is canonical. Applications own the Tokio runtime and call
+`mb_printer_executor::execute(&plan, &mut transport).await`; the SDK never
+creates a hidden or nested runtime. The optional blocking facade instead owns
+one dedicated worker runtime. Cancellation never retries a write or a plan:
+reconnect and retry decisions always belong to the caller.
+
+Catalogue models own their BLE GATT profile. BLE uses the declared FF02
+characteristic with write-without-response only; an FF03 notification
+characteristic declared optional may be absent without making connection fail.
+The hardware-qualified M110s profile requires FF03 and gates every write on its
+credit notifications; flow-control frames are never exposed as status replies.
 
 The portable rendering slice uses integer micrometre-to-dot conversion,
 deterministic bilevel dithering, raster rotation/head fitting, shapes, bitmap

@@ -9,6 +9,10 @@ try {
   const wasm = await import("./pkg/web/mb_printer_wasm.js");
   const adapters = await import("./dist/browser-adapters.js");
   await wasm.default();
+  const executePlan = (actions, transport, progress, signal, timing = {}) => wasm.executePlan(
+    JSON.stringify({protocol:"m-series",source_commit:"wasm-browser-fixture",actions}),
+    transport, timing, signal, progress,
+  );
   const fixture = await fetch("../../fixtures/wasm/equivalence.json").then((response) => response.json());
   const documentJson = JSON.stringify(fixture.document);
   if (wasm.validateDocument(documentJson) !== "[]") throw new Error("validation");
@@ -48,7 +52,7 @@ try {
     async transferOut(_endpoint, data) { usbWrites.push([...new Uint8Array(data)]); },
     async transferIn() { return {data:new DataView(Uint8Array.from([1]).buffer)}; },
   }, 2, 1, 64);
-  const completed = await adapters.executePlan([{action:"command-write",name:"probe",bytes:[1,2,3],atomic:true}], usb);
+  const completed = await executePlan([{action:"command-write",name:"probe",bytes:[1,2,3],atomic:true}], usb);
   if (completed.status !== "completed") throw new Error("WebUSB structured result");
   if (usbWrites.length !== 1 || usbWrites[0].join() !== "1,2,3") throw new Error("WebUSB adapter");
   class MockCharacteristic extends EventTarget {
@@ -61,29 +65,38 @@ try {
   await bluetooth.subscribeNotifications();
   await bluetooth.write(Uint8Array.from([4,5]));
   if (characteristic.writes[0].join() !== "4,5") throw new Error("WebBluetooth adapter");
+  const noNotifications = new adapters.WebBluetoothTransport(characteristic, undefined, 64);
+  if (await noNotifications.subscribeNotifications() !== false) throw new Error("optional WebBluetooth notifications");
+  const responseOnly = new adapters.WebBluetoothTransport({
+    async startNotifications() {},
+    async writeValue() {},
+  }, undefined, 64);
+  let unsupported;
+  try { await responseOnly.write(Uint8Array.of(1)); } catch (error) { unsupported = error; }
+  if (unsupported?.code !== "unsupported-profile") throw new Error("WebBluetooth write-without-response requirement");
   const mock = {payloadLimit:2,calls:[],async subscribeNotifications(){this.calls.push("s");return false},async write(v){this.calls.push([...v])},async waitForResponse(){return {kind:"timeout"}}};
-  let rejected=false; try { await adapters.executePlan([{action:"command-write",name:"ok",bytes:[1],atomic:true},{action:"command-write",name:"bad",bytes:[1,2,3],atomic:true}],mock); } catch { rejected=true; }
-  if (!rejected || mock.calls.length) throw new Error("atomic preflight");
-  const timeoutResult = await adapters.executePlan([{action:"wait-for-response",timeout_ms:1,fallback_delay_ms:5,validation:"any-notification"}],mock);
-  if (timeoutResult.status !== "outcome-unknown") throw new Error("timeout/fallback distinction");
+  const rejected = await executePlan([{action:"command-write",name:"ok",bytes:[1],atomic:true},{action:"command-write",name:"bad",bytes:[1,2,3],atomic:true}],mock);
+  if (rejected.status !== "failed" || mock.calls.length) throw new Error("atomic preflight");
+  const timeoutResult = await executePlan([{action:"wait-for-response",timeout_ms:1,fallback_delay_ms:5,validation:"any-notification"}],mock);
+  if (timeoutResult.status !== "completed") throw new Error("timeout fallback policy");
   const aborted = new AbortController(); aborted.abort();
-  const cancelled = await adapters.executePlan([{action:"command-write",name:"cancel",bytes:[1],atomic:true}],mock,undefined,aborted.signal);
+  const cancelled = await executePlan([{action:"command-write",name:"cancel",bytes:[1],atomic:true}],mock,undefined,aborted.signal);
   if (cancelled.status !== "cancelled-before-send") throw new Error("structured cancellation");
   const invalidBrother = {...mock,async waitForResponse(){return {kind:"response",bytes:new Uint8Array(32)}}};
-  const invalidStatus = await adapters.executePlan([{action:"wait-for-response",timeout_ms:1,fallback_delay_ms:0,validation:"brother-status32"}],invalidBrother);
-  if (invalidStatus.status !== "outcome-unknown") throw new Error("Brother response validation");
+  const invalidStatus = await executePlan([{action:"wait-for-response",timeout_ms:1,fallback_delay_ms:0,validation:"brother-status32"}],invalidBrother);
+  if (invalidStatus.status !== "failed") throw new Error("Brother response validation");
   const absentBrother = {...mock,async waitForResponse(){return {kind:"timeout"}}};
-  if ((await adapters.executePlan([{action:"wait-for-response",timeout_ms:1,fallback_delay_ms:0,validation:"brother-status32"}],absentBrother)).status !== "completed") throw new Error("Brother best-effort timeout policy");
+  if ((await executePlan([{action:"wait-for-response",timeout_ms:1,fallback_delay_ms:0,validation:"brother-status32"}],absentBrother)).status !== "completed") throw new Error("Brother best-effort timeout policy");
   for (const failed of ["subscribe","write","wait"]) {
     const disconnected = {payloadLimit:4,calls:[],async subscribeNotifications(){this.calls.push("subscribe");if(failed==="subscribe")throw new Error("disconnect");return true},async write(){this.calls.push("write");if(failed==="write")throw new Error("disconnect")},async waitForResponse(){this.calls.push("wait");if(failed==="wait")throw new Error("disconnect");return {kind:"response",bytes:Uint8Array.of(1)}}};
-    const result = await adapters.executePlan([{action:"subscribe-notifications"},{action:"command-write",name:"x",bytes:[1],atomic:true},{action:"wait-for-response",timeout_ms:1,fallback_delay_ms:0,validation:"any-notification"}],disconnected);
-    if (result.status !== (failed === "subscribe" ? "cancelled-before-send" : "outcome-unknown") || disconnected.calls.at(-1) !== failed) throw new Error(`disconnect boundary ${failed}`);
+    const result = await executePlan([{action:"subscribe-notifications"},{action:"command-write",name:"x",bytes:[1],atomic:true},{action:"wait-for-response",timeout_ms:1,fallback_delay_ms:0,validation:"any-notification"}],disconnected);
+    if (result.status !== (failed === "write" ? "outcome-unknown" : "failed") || disconnected.calls.at(-1) !== failed) throw new Error(`disconnect boundary ${failed}`);
   }
   const independentLimits = {...mock,payloadLimit:2,commandPayloadLimit:5,calls:[],async write(value,_signal,kind){this.calls.push([kind,...value])}};
-  const independent = await adapters.executePlan([{action:"command-write",name:"atomic",bytes:[1,2,3,4,5],atomic:true},{action:"raster-write",bytes:[6,7,8,9,10],logical_chunk:5,delay_after_each_physical_write_ms:0}],independentLimits);
+  const independent = await executePlan([{action:"command-write",name:"atomic",bytes:[1,2,3,4,5],atomic:true},{action:"raster-write",bytes:[6,7,8,9,10],logical_chunk:5,delay_after_each_physical_write_ms:0}],independentLimits);
   if (independent.status !== "completed" || JSON.stringify(independentLimits.calls) !== JSON.stringify([["command",1,2,3,4,5],["raster",6,7],["raster",8,9],["raster",10]])) throw new Error("independent command/raster limits");
   const boundaries = {...mock,payloadLimit:3,calls:[],async write(value){this.calls.push([...value])}};
-  await adapters.executePlan([{action:"raster-write",bytes:[0,1,2,3,4,5,6,7,8,9],logical_chunk:4,delay_after_each_physical_write_ms:0}],boundaries);
+  await executePlan([{action:"raster-write",bytes:[0,1,2,3,4,5,6,7,8,9],logical_chunk:4,delay_after_each_physical_write_ms:0}],boundaries);
   if (boundaries.calls.map(value=>value.length).join() !== "3,1,3,1,2") throw new Error("logical/physical boundaries");
   result.textContent = "MB_WASM_BROWSER_PASS";
 } catch (error) {

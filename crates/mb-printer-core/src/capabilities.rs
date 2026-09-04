@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -7,6 +8,7 @@ pub struct PrinterDefinition {
     pub id: String,
     pub name: String,
     pub protocol: Protocol,
+    pub ble: BleSupport,
     pub width_bytes: Option<u16>,
     #[serde(default = "dpi")]
     pub dpi: u16,
@@ -49,6 +51,49 @@ pub struct PrinterDefinition {
     /// compatible while making non-print operations explicit per model.
     #[serde(default = "default_operations")]
     pub operations: Vec<PrinterOperation>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", content = "capabilities", rename_all = "kebab-case")]
+pub enum BleSupport {
+    Unsupported,
+    Gatt(BleGattCapabilities),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct BleGattCapabilities {
+    pub write_characteristic: Uuid,
+    pub write_type: BleWriteType,
+    pub notification: Option<BleNotification>,
+    #[serde(default)]
+    pub flow_control: Option<BleFlowControl>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum BleFlowControl {
+    PhomemoCredit,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum BleWriteType {
+    WithoutResponse,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct BleNotification {
+    pub characteristic: Uuid,
+    pub requirement: NotificationRequirement,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum NotificationRequirement {
+    Optional,
+    Required,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -152,6 +197,14 @@ pub fn detect(name: &str) -> Option<PrinterDefinition> {
         .map(|x| x.1)
 }
 impl PrinterDefinition {
+    /// Returns this model's reviewed GATT profile, if BLE is supported.
+    pub fn ble_gatt(&self) -> Option<&BleGattCapabilities> {
+        match &self.ble {
+            BleSupport::Gatt(capabilities) => Some(capabilities),
+            BleSupport::Unsupported => None,
+        }
+    }
+
     /// Returns whether this model explicitly supports an operation.
     pub fn supports(&self, operation: PrinterOperation) -> bool {
         self.operations.contains(&operation)

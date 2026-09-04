@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+[package]
+name = "mb-printer-executor"
+description = "Cross-platform asynchronous plan executor for mb-printer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+documentation = "https://docs.rs/mb-printer-executor"
+readme = "README.md"
+keywords = ["thermal-printer", "async", "transport", "wasm"]
+categories = ["asynchronous", "hardware-support"]
+include = ["/src/**", "/tests/**", "/Cargo.toml", "/README.md", "/LICENSE"]
+
+[lints]
+workspace = true
+
+[dependencies]
+mb-printer-core = { path = "../mb-printer-core", version = "0.1.0" }
+thiserror.workspace = true
+tracing.workspace = true
+futures-util = "0.3"
+web-time = "1"
+
+[dev-dependencies]
+futures-executor = "0.3"
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen = "0.2"

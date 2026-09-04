@@ -38,14 +38,15 @@ enum Target {
     },
 }
 
-fn main() {
-    if let Err(error) = run() {
+#[tokio::main]
+async fn main() {
+    if let Err(error) = run().await {
         eprintln!("error: {error}");
         std::process::exit(2);
     }
 }
 
-fn run() -> Result<(), String> {
+async fn run() -> Result<(), String> {
     let options = parse_args(env::args().skip(1))?;
     if matches!(options.target, Target::ListModels) {
         for profile in MODEL_PROFILES {
@@ -58,8 +59,8 @@ fn run() -> Result<(), String> {
     }
 
     let (transport, endpoint, profile, inspection) = match options.target {
-        Target::Tcp { profile, host } => retrieve_tcp(profile, &host)?,
-        Target::Usb { profile, selector } => retrieve_usb(profile, selector)?,
+        Target::Tcp { profile, host } => retrieve_tcp(profile, &host).await?,
+        Target::Usb { profile, selector } => retrieve_usb(profile, selector).await?,
         Target::ListModels => unreachable!(),
     };
     println!(
@@ -76,7 +77,7 @@ fn run() -> Result<(), String> {
     Ok(())
 }
 
-fn retrieve_tcp(
+async fn retrieve_tcp(
     profile: &'static BrotherModelProfile,
     host: &str,
 ) -> Result<
@@ -94,8 +95,10 @@ fn retrieve_tcp(
         format!("{host}:9100")
     };
     let address = resolve_one(&target)?;
-    let mut transport = TcpTransport::connect(address, COMMAND_LIMIT, RESPONSE_LIMIT)?;
-    let inspection = retrieve_device_settings(&mut transport, profile);
+    let mut transport = TcpTransport::connect(address, COMMAND_LIMIT, RESPONSE_LIMIT)
+        .await
+        .map_err(|error| error.to_string())?;
+    let inspection = retrieve_device_settings(&mut transport, profile).await;
     Ok(("raw-tcp".into(), address.to_string(), profile, inspection))
 }
 
@@ -108,7 +111,7 @@ fn resolve_one(target: &str) -> Result<SocketAddr, String> {
 }
 
 #[cfg(feature = "usb")]
-fn retrieve_usb(
+async fn retrieve_usb(
     profile: &'static BrotherModelProfile,
     selector: Option<(u8, u8)>,
 ) -> Result<
@@ -165,12 +168,12 @@ fn retrieve_usb(
         RESPONSE_LIMIT,
         3_000,
     )?;
-    let inspection = retrieve_device_settings(&mut transport, profile);
+    let inspection = retrieve_device_settings(&mut transport, profile).await;
     Ok(("usb".into(), endpoint, profile, inspection))
 }
 
 #[cfg(not(feature = "usb"))]
-fn retrieve_usb(
+async fn retrieve_usb(
     _: &'static BrotherModelProfile,
     _: Option<(u8, u8)>,
 ) -> Result<

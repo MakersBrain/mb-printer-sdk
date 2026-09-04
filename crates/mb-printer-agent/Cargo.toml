@@ -11,6 +11,9 @@ homepage.workspace = true
 rust-version.workspace = true
 include = ["/src/**", "/tests/**", "/Cargo.toml"]
 
+[lints]
+workspace = true
+
 [dependencies]
 mb-printer-agent-proto = { version = "=0.1.0", path = "../mb-printer-agent-proto" }
 mb-printer-core = { version = "=0.1.0", path = "../mb-printer-core" }

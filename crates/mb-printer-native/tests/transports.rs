@@ -7,8 +7,10 @@
     feature = "native-input"
 ))]
 use mb_printer_native::transports::*;
-#[cfg(any(feature = "usb", feature = "ble"))]
-use mb_printer_native::{Transport, WaitOutcome};
+#[cfg(feature = "usb")]
+use mb_printer_native::{Transport, WaitOutcome, WriteKind};
+#[cfg(feature = "usb")]
+use std::time::Duration;
 
 #[cfg(feature = "serial")]
 #[test]
@@ -35,8 +37,8 @@ fn serial_discovery_is_filtered_and_sorted() {
 }
 
 #[cfg(feature = "usb")]
-#[test]
-fn usb_backend_preserves_writes_and_timeout() {
+#[tokio::test]
+async fn usb_backend_preserves_writes_and_timeout() {
     #[derive(Default)]
     struct Fake {
         writes: Vec<Vec<u8>>,
@@ -52,9 +54,15 @@ fn usb_backend_preserves_writes_and_timeout() {
         }
     }
     let mut transport = usb::UsbTransport::new(Fake::default(), 64, 32);
-    transport.write(&[1, 2]).unwrap();
+    transport.write(&[1, 2], WriteKind::Raster).await.unwrap();
     assert_eq!(transport.backend().writes, vec![vec![1, 2]]);
-    assert_eq!(transport.wait_response(5).unwrap(), WaitOutcome::Timeout);
+    assert_eq!(
+        transport
+            .wait_response(Duration::from_millis(5))
+            .await
+            .unwrap(),
+        WaitOutcome::Timeout
+    );
 }
 
 #[cfg(feature = "usb")]
@@ -147,8 +155,8 @@ fn usb_printer_class_device_id_is_bounded_and_typed() {
 }
 
 #[cfg(feature = "usb")]
-#[test]
-fn usb_printer_class_queries_are_injectable_and_bounded() {
+#[tokio::test]
+async fn usb_printer_class_queries_are_injectable_and_bounded() {
     #[derive(Default)]
     struct Fake {
         device_id: Option<Vec<u8>>,
@@ -171,6 +179,14 @@ fn usb_printer_class_queries_are_injectable_and_bounded() {
             Ok(self.port_status.take())
         }
     }
+    impl usb::UsbBulkBackend for Fake {
+        fn write_bulk(&mut self, _: &[u8]) -> Result<(), String> {
+            Ok(())
+        }
+        fn read_bulk(&mut self, _: u64, _: usize) -> Result<Option<Vec<u8>>, String> {
+            Ok(None)
+        }
+    }
 
     let payload = b"MANUFACTURER:Brother;MODEL:QL-1100;COMMAND SET:PJL;";
     let mut device_id = u16::try_from(payload.len() + 2)
@@ -187,11 +203,11 @@ fn usb_printer_class_queries_are_injectable_and_bounded() {
         64,
         64,
     );
-    let identifier = transport.get_device_id(250).unwrap().unwrap();
+    let identifier = transport.get_device_id(250).await.unwrap().unwrap();
     assert_eq!(identifier.manufacturer.as_deref(), Some("Brother"));
     assert_eq!(identifier.model.as_deref(), Some("QL-1100"));
     assert_eq!(
-        transport.get_port_status(300).unwrap(),
+        transport.get_port_status(300).await.unwrap(),
         Some(usb::UsbPortStatus {
             selected: true,
             paper_empty: false,
@@ -205,8 +221,8 @@ fn usb_printer_class_queries_are_injectable_and_bounded() {
     assert_eq!(transport.backend().port_calls, [300]);
 
     let mut invalid = usb::UsbTransport::new(Fake::default(), 64, 64);
-    assert!(invalid.get_device_id(0).is_err());
-    assert!(invalid.get_port_status(0).is_err());
+    assert!(invalid.get_device_id(0).await.is_err());
+    assert!(invalid.get_port_status(0).await.is_err());
     assert!(invalid.backend().device_calls.is_empty());
     assert!(invalid.backend().port_calls.is_empty());
 }
@@ -244,158 +260,17 @@ fn serial_configuration_has_explicit_printer_defaults() {
 
 #[cfg(feature = "ble")]
 #[test]
-fn ble_backend_distinguishes_unavailable_timeout_and_notification() {
-    struct Fake {
-        available: bool,
-        reply: Option<Vec<u8>>,
-    }
-    impl ble::BleGattBackend for Fake {
-        fn subscribe(&mut self) -> Result<bool, String> {
-            Ok(self.available)
-        }
-        fn write_without_response(&mut self, _: &[u8]) -> Result<(), String> {
-            Ok(())
-        }
-        fn wait_notification(&mut self, _: u64) -> Result<Option<Vec<u8>>, String> {
-            Ok(self.reply.take())
-        }
-    }
-    let mut unavailable = ble::BleTransport::new(
-        Fake {
-            available: false,
-            reply: None,
-        },
-        20,
-    );
-    unavailable.subscribe_notifications().unwrap();
-    assert_eq!(
-        unavailable.wait_response(1).unwrap(),
-        WaitOutcome::Unavailable
-    );
-    let mut connected = ble::BleTransport::new(
-        Fake {
-            available: true,
-            reply: Some(vec![9]),
-        },
-        20,
-    );
-    connected.subscribe_notifications().unwrap();
-    assert_eq!(
-        connected.wait_response(1).unwrap(),
-        WaitOutcome::Response(vec![9])
-    );
-    assert_eq!(connected.wait_response(1).unwrap(), WaitOutcome::Timeout);
-}
+fn concrete_ble_transport_implements_shared_async_contract() {
+    fn assert_transport<T: mb_printer_executor::Transport>() {}
+    assert_transport::<ble::BtleplugTransport>();
 
-#[cfg(feature = "ble")]
-#[test]
-fn injectable_async_ble_serializes_notifies_and_disconnects() {
-    use std::future::Future;
-    use std::pin::Pin;
-    use std::sync::{
-        Arc, Mutex,
-        atomic::{AtomicUsize, Ordering},
+    let options = ble::BtleplugConnectOptions {
+        scan_timeout: std::time::Duration::from_millis(250),
+        payload_limit: std::num::NonZeroUsize::new(20).unwrap(),
     };
-
-    #[derive(Clone)]
-    struct State {
-        events: Arc<Mutex<Vec<String>>>,
-        in_flight: Arc<AtomicUsize>,
-        maximum_in_flight: Arc<AtomicUsize>,
-    }
-    struct Fake {
-        state: State,
-        reply: Option<Vec<u8>>,
-    }
-    impl ble::AsyncBleGattBackend for Fake {
-        fn subscribe(&mut self) -> Pin<Box<dyn Future<Output = Result<bool, String>> + Send + '_>> {
-            Box::pin(async {
-                self.state.events.lock().unwrap().push("subscribe".into());
-                Ok(true)
-            })
-        }
-        fn write_without_response<'a>(
-            &'a mut self,
-            bytes: &'a [u8],
-        ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>> {
-            Box::pin(async move {
-                let current = self.state.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
-                self.state
-                    .maximum_in_flight
-                    .fetch_max(current, Ordering::SeqCst);
-                self.state
-                    .events
-                    .lock()
-                    .unwrap()
-                    .push(format!("write:{}", bytes[0]));
-                tokio::time::sleep(std::time::Duration::from_millis(2)).await;
-                self.state.in_flight.fetch_sub(1, Ordering::SeqCst);
-                Ok(())
-            })
-        }
-        fn wait_notification(
-            &mut self,
-            timeout_ms: u64,
-        ) -> Pin<Box<dyn Future<Output = Result<Option<Vec<u8>>, String>> + Send + '_>> {
-            Box::pin(async move {
-                self.state
-                    .events
-                    .lock()
-                    .unwrap()
-                    .push(format!("wait:{timeout_ms}"));
-                Ok(self.reply.take())
-            })
-        }
-        fn disconnect(&mut self) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + '_>> {
-            Box::pin(async {
-                self.state.events.lock().unwrap().push("disconnect".into());
-                Ok(())
-            })
-        }
-    }
-    let state = State {
-        events: Arc::new(Mutex::new(vec![])),
-        in_flight: Arc::new(AtomicUsize::new(0)),
-        maximum_in_flight: Arc::new(AtomicUsize::new(0)),
-    };
-    let runtime = tokio::runtime::Runtime::new().unwrap();
-    runtime.block_on(async {
-        let transport = Arc::new(
-            ble::AsyncBleTransport::new(
-                Fake {
-                    state: state.clone(),
-                    reply: Some(vec![9]),
-                },
-                20,
-            )
-            .unwrap(),
-        );
-        assert_eq!(
-            transport.wait_notification(1).await.unwrap(),
-            WaitOutcome::Unavailable
-        );
-        assert!(transport.subscribe_notifications().await.unwrap());
-        let (left, right) =
-            futures_util::future::join(transport.write(&[1]), transport.write(&[2])).await;
-        left.unwrap();
-        right.unwrap();
-        assert_eq!(
-            transport.wait_notification(25).await.unwrap(),
-            WaitOutcome::Response(vec![9])
-        );
-        assert_eq!(
-            transport.wait_notification(25).await.unwrap(),
-            WaitOutcome::Timeout
-        );
-        assert!(transport.write(&[0; 21]).await.is_err());
-        transport.disconnect().await.unwrap();
-    });
-    assert_eq!(state.maximum_in_flight.load(Ordering::SeqCst), 1);
-    let events = state.events.lock().unwrap();
-    assert_eq!(events.first().map(String::as_str), Some("subscribe"));
-    assert_eq!(events.last().map(String::as_str), Some("disconnect"));
+    assert_eq!(options.scan_timeout, std::time::Duration::from_millis(250));
+    assert_eq!(options.payload_limit.get(), 20);
 }
-
 #[cfg(feature = "wifi")]
 #[test]
 fn wifi_credentials_never_debug_the_secret() {
@@ -414,8 +289,8 @@ fn brother_wifi_commands_and_parsers_match_reference_contract() {
     let settings = wifi::WirelessSettings {
         ssid: "Café".into(),
         password: "secret".into(),
-        encryption: "tkip-aes".into(),
-        authentication: "wpa-psk".into(),
+        encryption: wifi::WirelessEncryption::TkipAes,
+        authentication: wifi::WirelessAuthentication::WpaPsk,
         infrastructure: true,
         wireless_direct: false,
         reboot: false,

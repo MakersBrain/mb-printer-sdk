@@ -7,7 +7,9 @@ use std::{
 };
 
 use mb_printer_native::{
-    brother_settings::{BrotherSettingsInspection, retrieve_wireless_settings_with},
+    brother_settings::{
+        BrotherSettingsInspection, retrieve_wireless_setting, retrieve_wireless_settings_with,
+    },
     transports::TcpTransport,
 };
 use serde_json::{Value, json};
@@ -29,22 +31,23 @@ enum Target {
     Usb(Option<(u8, u8)>),
 }
 
-fn main() {
-    if let Err(error) = run() {
+#[tokio::main]
+async fn main() {
+    if let Err(error) = run().await {
         eprintln!("error: {error}");
         std::process::exit(2);
     }
 }
 
-fn run() -> Result<(), String> {
+async fn run() -> Result<(), String> {
     let options = parse_args(env::args().skip(1))?;
     if options.raw && !options.show_sensitive {
         return Err("--raw requires the separate --show-sensitive opt-in".into());
     }
 
     let (transport_name, endpoint, inspection) = match &options.target {
-        Target::Tcp(target) => retrieve_tcp(target)?,
-        Target::Usb(selector) => retrieve_usb(*selector)?,
+        Target::Tcp(target) => retrieve_tcp(target).await?,
+        Target::Usb(selector) => retrieve_usb(*selector).await?,
     };
     let output = render(
         &transport_name,
@@ -60,16 +63,21 @@ fn run() -> Result<(), String> {
     Ok(())
 }
 
-fn retrieve_tcp(target: &str) -> Result<(String, String, BrotherSettingsInspection), String> {
+async fn retrieve_tcp(target: &str) -> Result<(String, String, BrotherSettingsInspection), String> {
     let target = if target.contains(':') {
         target.to_owned()
     } else {
         format!("{target}:9100")
     };
     let address = resolve_one(&target)?;
-    let inspection = retrieve_wireless_settings_with(|| {
-        TcpTransport::connect(address, COMMAND_LIMIT, RESPONSE_LIMIT)
-    });
+    let mut observations = Vec::new();
+    for field in mb_printer_core::protocol::brother::wifi::WirelessField::ALL {
+        let mut transport = TcpTransport::connect(address, COMMAND_LIMIT, RESPONSE_LIMIT)
+            .await
+            .map_err(|error| error.to_string())?;
+        observations.push(retrieve_wireless_setting(&mut transport, field).await);
+    }
+    let inspection = BrotherSettingsInspection { observations };
     Ok(("raw-tcp".into(), address.to_string(), inspection))
 }
 
@@ -82,7 +90,7 @@ fn resolve_one(target: &str) -> Result<SocketAddr, String> {
 }
 
 #[cfg(feature = "usb")]
-fn retrieve_usb(
+async fn retrieve_usb(
     selector: Option<(u8, u8)>,
 ) -> Result<(String, String, BrotherSettingsInspection), String> {
     use mb_printer_native::transports::usb;
@@ -131,12 +139,13 @@ fn retrieve_usb(
             RESPONSE_LIMIT,
             3_000,
         )
-    });
+    })
+    .await;
     Ok(("usb".into(), endpoint, inspection))
 }
 
 #[cfg(not(feature = "usb"))]
-fn retrieve_usb(
+async fn retrieve_usb(
     _: Option<(u8, u8)>,
 ) -> Result<(String, String, BrotherSettingsInspection), String> {
     let _ = USB_VENDOR_BROTHER;

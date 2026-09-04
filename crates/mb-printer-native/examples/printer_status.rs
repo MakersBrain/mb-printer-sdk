@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Reads live status from a USB-attached Brother printer and prints it as JSON.
+//! Reads live status from a USB-attached or raw-TCP Brother printer and prints it as JSON.
 //!
 //! cargo run -p mb-printer-native --features usb --example printer_status -- [model-id]
 //! MB_STATUS_TCP=192.0.2.10:9100 cargo run -p mb-printer-native --features usb --example printer_status -- [model-id]
 //! MB_STATUS_ATTEMPTS=5 cargo run -p mb-printer-native --features usb --example printer_status -- [model-id]
 //!
-//! Requires permission on the USB device (a udev rule, or run with sudo).
+//! USB access requires permission on the device (a udev rule, or run with sudo).
 
 #[cfg(feature = "usb")]
-fn main() -> Result<(), String> {
+#[tokio::main]
+async fn main() -> Result<(), String> {
     use mb_printer_core::{capabilities, protocol};
     use mb_printer_native::transports::{TcpTransport, usb};
 
@@ -23,8 +24,10 @@ fn main() -> Result<(), String> {
             .parse()
             .map_err(|error| format!("invalid MB_STATUS_TCP address: {error}"))?;
         eprintln!("using Brother raw TCP status endpoint {address}");
-        let mut transport = TcpTransport::connect(address, 16_384, 16_384)?;
-        return read_status(&plan, &mut transport);
+        let mut transport = TcpTransport::connect(address, 16_384, 16_384)
+            .await
+            .map_err(|error| error.to_string())?;
+        return read_status(&plan, &mut transport).await;
     }
 
     let candidates = usb::discover_rusb_bulk()?;
@@ -43,16 +46,17 @@ fn main() -> Result<(), String> {
     );
 
     let mut transport = usb::open_rusb_with_limits(candidate, 16_384, 16_384, 64, 3_000)?;
-    read_status(&plan, &mut transport)
+    read_status(&plan, &mut transport).await
 }
 
 #[cfg(feature = "usb")]
-fn read_status<T: mb_printer_native::Transport>(
+async fn read_status<T: mb_printer_executor::Transport>(
     plan: &mb_printer_core::protocol::Plan,
     transport: &mut T,
 ) -> Result<(), String> {
     use mb_printer_core::protocol;
-    use mb_printer_native::{ExecuteError, WaitOutcome, execute};
+    use mb_printer_executor::{ExecuteError, WaitOutcome, execute};
+    use std::time::Duration;
 
     let attempts = std::env::var("MB_STATUS_ATTEMPTS")
         .map(|value| {
@@ -69,20 +73,9 @@ fn read_status<T: mb_printer_native::Transport>(
         })
         .unwrap_or(Ok(3))?;
 
-    // Write the request, then read the reply directly so a malformed frame can be shown.
-    let request = protocol::Plan {
-        actions: plan
-            .actions
-            .iter()
-            .filter(|action| !matches!(action, protocol::Action::WaitForResponse { .. }))
-            .cloned()
-            .collect(),
-        ..plan.clone()
-    };
     if std::env::var("MB_STATUS_EXECUTE").is_ok() {
-        // Exercise the executor's own capture path, which the browser route mirrors.
         for attempt in 1..=attempts {
-            match execute(plan, transport) {
+            match execute(plan, &mut *transport).await {
                 Ok(progress) => {
                     let captured = progress
                         .responses
@@ -93,22 +86,42 @@ fn read_status<T: mb_printer_native::Transport>(
                         serde_json::to_string_pretty(&protocol::brother_parse_status(captured)?)
                             .map_err(|error| error.to_string())?
                     );
+                    transport
+                        .disconnect()
+                        .await
+                        .map_err(|error| error.to_string())?;
                     return Ok(());
                 }
                 Err(error @ ExecuteError::Timeout { .. }) if attempt < attempts => {
                     eprintln!("status attempt {attempt}/{attempts} failed: {error}; retrying");
-                    transport.delay_monotonic(250);
+                    transport.delay(Duration::from_millis(250)).await;
                 }
                 Err(error) => return Err(error.to_string()),
             }
         }
     }
 
+    // Write the request, then read the reply directly so malformed frames can be shown.
+    let request = protocol::Plan {
+        actions: plan
+            .actions
+            .iter()
+            .filter(|action| !matches!(action, protocol::Action::WaitForResponse { .. }))
+            .cloned()
+            .collect(),
+        ..plan.clone()
+    };
     for attempt in 1..=attempts {
-        execute(&request, transport).map_err(|error| error.to_string())?;
+        execute(&request, &mut *transport)
+            .await
+            .map_err(|error| error.to_string())?;
         let mut reply = Vec::new();
         for _ in 0..8 {
-            match transport.wait_response(3_000)? {
+            match transport
+                .wait_response(Duration::from_secs(3))
+                .await
+                .map_err(|error| error.to_string())?
+            {
                 WaitOutcome::Response(bytes) => {
                     reply.extend(bytes);
                     if reply.len() >= 32 {
@@ -128,14 +141,18 @@ fn read_status<T: mb_printer_native::Transport>(
                 .join(" ")
         );
         if !reply.is_empty() || attempt == attempts {
-            let status = protocol::brother_parse_status(&reply)?;
             println!(
                 "{}",
-                serde_json::to_string_pretty(&status).map_err(|error| error.to_string())?
+                serde_json::to_string_pretty(&protocol::brother_parse_status(&reply)?)
+                    .map_err(|error| error.to_string())?
             );
+            transport
+                .disconnect()
+                .await
+                .map_err(|error| error.to_string())?;
             return Ok(());
         }
-        transport.delay_monotonic(250);
+        transport.delay(Duration::from_millis(250)).await;
     }
 
     unreachable!("attempt count is validated as positive")

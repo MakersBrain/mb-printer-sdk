@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+//! WebAssembly-friendly JSON and JavaScript adapters over the portable printer
+//! core and shared asynchronous executor.
 #![forbid(unsafe_code)]
 use mb_printer_core::{
     Document, capabilities, export, importer, ipp, materialize, media, pdf_import, protocol,
@@ -6,6 +8,9 @@ use mb_printer_core::{
 };
 use std::collections::BTreeMap;
 use std::num::NonZeroU16;
+
+#[cfg(target_arch = "wasm32")]
+mod transport;
 
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -248,21 +253,53 @@ fn parse_document(
 
 pub fn validate_document_json(input: &str) -> String {
     if let Err(error) = enforce_json_wire(&[input]) {
-        return serde_json::to_string(&vec![error]).unwrap();
+        return serialize_validation_errors(&[error]);
     }
     let limits = processing_limits();
     match Document::from_json(input) {
         Ok(d) => match d.validate_with_limits(&limits) {
             Ok(()) => "[]".into(),
-            Err(e) => serde_json::to_string(&e.iter().map(ToString::to_string).collect::<Vec<_>>())
-                .unwrap(),
+            Err(e) => {
+                serialize_validation_errors(&e.iter().map(ToString::to_string).collect::<Vec<_>>())
+            }
         },
-        Err(e) => serde_json::to_string(&vec![e.to_string()]).unwrap(),
+        Err(e) => serialize_validation_errors(&[e.to_string()]),
     }
 }
 
+fn serialize_validation_errors(errors: &[String]) -> String {
+    serde_json::to_string(errors)
+        .unwrap_or_else(|_| "[\"validation error serialization failed\"]".into())
+}
+
 pub fn capabilities_json() -> String {
-    serde_json::to_string(&capabilities::bundled()).expect("definitions serialize")
+    serde_json::to_string(&capabilities::bundled()).unwrap_or_else(|_| "[]".into())
+}
+/// Identity of this SDK build, recorded at compile time by `build.rs`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BuildInfo {
+    /// Cargo package name of the bindings crate.
+    pub name: &'static str,
+    /// Cargo package version shared by every workspace crate.
+    pub version: &'static str,
+    /// Full git commit the bindings were compiled from, or `unknown`.
+    pub commit: &'static str,
+    /// Whether tracked files were modified when the bindings were compiled.
+    pub dirty: bool,
+    /// Commit of the reference protocol implementation stamped into every plan.
+    pub protocol_source_commit: &'static str,
+}
+pub const BUILD_INFO: BuildInfo = BuildInfo {
+    name: env!("CARGO_PKG_NAME"),
+    version: env!("CARGO_PKG_VERSION"),
+    commit: env!("MB_SDK_GIT_COMMIT"),
+    dirty: matches!(env!("MB_SDK_GIT_DIRTY").as_bytes(), b"1"),
+    protocol_source_commit: protocol::SOURCE_COMMIT,
+};
+pub fn build_info_json() -> String {
+    serde_json::to_string(&BUILD_INFO)
+        .unwrap_or_else(|_| "{\"name\":\"mb-printer-wasm\",\"version\":\"unknown\"}".into())
 }
 pub fn import_v3_json(input: &str) -> Result<String, String> {
     enforce_json_wire(&[input])?;
@@ -882,11 +919,10 @@ fn protocol_options(
         .and_then(|options| options.get("continuous"))
         .filter(|value| value.is_object())
         .cloned();
-    if continuous.is_some() {
-        value
-            .as_object_mut()
-            .expect("continuous options require an object")
-            .remove("continuous");
+    if continuous.is_some()
+        && let Some(options) = value.as_object_mut()
+    {
+        options.remove("continuous");
     }
     let mut options: protocol::Options =
         serde_json::from_value(value).map_err(|error| error.to_string())?;
@@ -947,224 +983,8 @@ fn validate_continuous_document<'a>(
     Ok(Some(capabilities))
 }
 #[cfg(target_arch = "wasm32")]
-mod bindings {
-    use wasm_bindgen::prelude::*;
-
-    fn sheet_error(error: super::SheetApiError) -> JsValue {
-        let value = js_sys::Error::new(&error.message);
-        let _ = js_sys::Reflect::set(
-            value.as_ref(),
-            &JsValue::from_str("code"),
-            &JsValue::from_str(error.code),
-        );
-        if let Ok(json) = serde_json::to_string(&error.details)
-            && let Ok(details) = js_sys::JSON::parse(&json)
-        {
-            let _ = js_sys::Reflect::set(value.as_ref(), &JsValue::from_str("details"), &details);
-        }
-        value.into()
-    }
-    fn materialize_error(error: super::MaterializeApiError) -> JsValue {
-        let value = js_sys::Error::new(&error.message);
-        let _ = js_sys::Reflect::set(
-            value.as_ref(),
-            &JsValue::from_str("version"),
-            &JsValue::from_f64(f64::from(error.version)),
-        );
-        let _ = js_sys::Reflect::set(
-            value.as_ref(),
-            &JsValue::from_str("code"),
-            &JsValue::from_str(error.code),
-        );
-        if let Ok(json) = serde_json::to_string(&error.details)
-            && let Ok(details) = js_sys::JSON::parse(&json)
-        {
-            let _ = js_sys::Reflect::set(value.as_ref(), &JsValue::from_str("details"), &details);
-        }
-        value.into()
-    }
-    #[wasm_bindgen(js_name=validateDocument)]
-    pub fn validate_document(input: &str) -> String {
-        super::validate_document_json(input)
-    }
-    #[wasm_bindgen(js_name=printerCapabilities)]
-    pub fn printer_capabilities() -> String {
-        super::capabilities_json()
-    }
-    #[wasm_bindgen(js_name=importV3)]
-    pub fn import_v3(input: &str) -> Result<String, JsValue> {
-        super::import_v3_json(input).map_err(|e| JsValue::from_str(&e))
-    }
-    #[wasm_bindgen(js_name=evaluateTemplate)]
-    pub fn evaluate_template(input: &str, fields_json: &str) -> Result<String, JsValue> {
-        super::evaluate_template_json(input, fields_json).map_err(|e| JsValue::from_str(&e))
-    }
-    #[wasm_bindgen(js_name=evaluateTemplateContext)]
-    pub fn evaluate_template_context(
-        input: &str,
-        fields_json: &str,
-        locale: &str,
-        current_date: &str,
-    ) -> Result<String, JsValue> {
-        super::evaluate_template_context_json(input, fields_json, locale, current_date)
-            .map_err(|e| JsValue::from_str(&e))
-    }
-    #[wasm_bindgen(js_name=materializeRecord)]
-    pub fn materialize_record(
-        document_json: &str,
-        record_json: &str,
-        options_json: &str,
-    ) -> Result<String, JsValue> {
-        super::materialize_record_json(document_json, record_json, options_json)
-            .map_err(materialize_error)
-    }
-    #[wasm_bindgen(js_name=planZoneBatch)]
-    pub fn plan_zone_batch(document_json: &str, input_json: &str) -> Result<String, JsValue> {
-        super::plan_zone_batch_json(document_json, input_json).map_err(materialize_error)
-    }
-    #[wasm_bindgen(js_name=materializeZoneBatch)]
-    pub fn materialize_zone_batch(
-        document_json: &str,
-        records_json: &str,
-        options_json: &str,
-    ) -> Result<String, JsValue> {
-        super::materialize_zone_batch_json(document_json, records_json, options_json)
-            .map_err(materialize_error)
-    }
-    #[wasm_bindgen(js_name=extractLaPoste)]
-    pub fn extract_laposte(
-        code: &str,
-        page: u32,
-        width_um: i64,
-        height_um: i64,
-        raster_width: u32,
-        raster_height: u32,
-        pixels: Vec<u8>,
-    ) -> Result<String, JsValue> {
-        super::extract_laposte_json(
-            code,
-            page,
-            width_um,
-            height_um,
-            raster_width,
-            raster_height,
-            pixels,
-        )
-        .map_err(|e| JsValue::from_str(&e))
-    }
-    #[wasm_bindgen(js_name=protocolPlan)]
-    pub fn protocol_plan(
-        model: &str,
-        width_bytes: u16,
-        height: u32,
-        bytes_json: &str,
-    ) -> Result<String, JsValue> {
-        super::protocol_plan_json(model, width_bytes, height, bytes_json)
-            .map_err(|e| JsValue::from_str(&e))
-    }
-    #[wasm_bindgen(js_name=renderPacked)]
-    pub fn render_packed(input: &str) -> Result<Vec<u8>, JsValue> {
-        super::render_packed(input).map_err(|e| JsValue::from_str(&e))
-    }
-    #[wasm_bindgen(js_name=renderPng)]
-    pub fn render_png(input: &str) -> Result<Vec<u8>, JsValue> {
-        super::render_png(input).map_err(|e| JsValue::from_str(&e))
-    }
-    #[wasm_bindgen(js_name=measureDocument)]
-    pub fn measure_document(input: &str) -> Result<String, JsValue> {
-        super::measure_document_json(input).map_err(|e| JsValue::from_str(&e))
-    }
-    #[wasm_bindgen(js_name=renderPdf)]
-    pub fn render_pdf(input: &str) -> Result<Vec<u8>, JsValue> {
-        super::render_pdf(input).map_err(|e| JsValue::from_str(&e))
-    }
-    #[wasm_bindgen(js_name=renderBatchPdf)]
-    pub fn render_batch_pdf(input: &str) -> Result<Vec<u8>, JsValue> {
-        super::render_batch_pdf(input).map_err(|e| JsValue::from_str(&e))
-    }
-    #[wasm_bindgen(js_name=planSheet)]
-    pub fn plan_sheet(
-        plan_input_json: &str,
-        layout_json: &str,
-        options_json: &str,
-    ) -> Result<String, JsValue> {
-        super::plan_sheet_json(plan_input_json, layout_json, options_json).map_err(sheet_error)
-    }
-    #[wasm_bindgen(js_name=buildSheetPdf)]
-    pub fn build_sheet_pdf(
-        documents_json: &str,
-        layout_json: &str,
-        options_json: &str,
-    ) -> Result<Vec<u8>, JsValue> {
-        super::build_sheet_pdf_json(documents_json, layout_json, options_json).map_err(sheet_error)
-    }
-    #[wasm_bindgen(js_name=normalizePdf)]
-    pub fn normalize_pdf(
-        bytes: Vec<u8>,
-        dpi: u16,
-        first_page_only: bool,
-    ) -> Result<String, JsValue> {
-        super::normalize_pdf_json(bytes, dpi, first_page_only).map_err(|e| JsValue::from_str(&e))
-    }
-    #[wasm_bindgen(js_name=extractLaPostePdf)]
-    pub fn extract_laposte_pdf(code: &str, bytes: Vec<u8>, dpi: u16) -> Result<String, JsValue> {
-        super::extract_laposte_pdf_json(code, bytes, dpi).map_err(|e| JsValue::from_str(&e))
-    }
-    #[wasm_bindgen(js_name=mediaPresets)]
-    pub fn media_presets(model: &str) -> Result<String, JsValue> {
-        super::media_presets_json(model).map_err(|e| JsValue::from_str(&e))
-    }
-    #[wasm_bindgen(js_name=matchMedia)]
-    pub fn match_media(model: &str, width_mm: f64, height_mm: f64) -> Result<String, JsValue> {
-        super::match_media_json(model, width_mm, height_mm).map_err(|e| JsValue::from_str(&e))
-    }
-    #[wasm_bindgen(js_name=statusPlan)]
-    pub fn status_plan(model: &str) -> Result<String, JsValue> {
-        super::status_plan_json(model).map_err(|e| JsValue::from_str(&e))
-    }
-    #[wasm_bindgen(js_name=parsePhomemoStatus)]
-    pub fn parse_phomemo_status(frames_json: &str) -> Result<String, JsValue> {
-        super::parse_phomemo_status_json(frames_json).map_err(|e| JsValue::from_str(&e))
-    }
-    #[wasm_bindgen(js_name=parseBrotherStatus)]
-    pub fn parse_brother_status(data: &[u8]) -> Result<String, JsValue> {
-        super::parse_brother_status_json(data).map_err(|e| JsValue::from_str(&e))
-    }
-
-    #[wasm_bindgen(js_name=decodeIpp)]
-    pub fn decode_ipp(data: &[u8], maximum_message_bytes: usize) -> Result<String, JsValue> {
-        super::decode_ipp_json(data, maximum_message_bytes)
-            .map_err(|error| JsValue::from_str(&error))
-    }
-
-    #[wasm_bindgen(js_name=encodeIpp)]
-    pub fn encode_ipp(input: &str, maximum_message_bytes: usize) -> Result<Vec<u8>, JsValue> {
-        super::encode_ipp_json(input, maximum_message_bytes)
-            .map_err(|error| JsValue::from_str(&error))
-    }
-    #[wasm_bindgen(js_name=renderProtocolPlan)]
-    pub fn render_protocol_plan(input: &str, model: &str) -> Result<String, JsValue> {
-        super::render_protocol_plan(input, model).map_err(|e| JsValue::from_str(&e))
-    }
-    #[wasm_bindgen(js_name=renderProtocolPlanWithOptions)]
-    pub fn render_protocol_plan_with_options(
-        input: &str,
-        model: &str,
-        options_json: &str,
-    ) -> Result<String, JsValue> {
-        super::render_protocol_plan_with_options(input, model, options_json)
-            .map_err(|e| JsValue::from_str(&e))
-    }
-    #[wasm_bindgen(js_name=renderProtocolBatchPlanWithOptions)]
-    pub fn render_protocol_batch_plan_with_options(
-        input: &str,
-        model: &str,
-        options_json: &str,
-    ) -> Result<String, JsValue> {
-        super::render_protocol_batch_plan_with_options(input, model, options_json)
-            .map_err(|e| JsValue::from_str(&e))
-    }
-}
+#[path = "wasm/bindings.rs"]
+mod bindings;
 
 #[cfg(test)]
 mod render_option_tests {

@@ -1,9 +1,9 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 # mb-printer-native
 
-Native asynchronous execution boundary for typed `mb-printer-core` action
-plans, including atomic-write preflight, physical chunking, pacing, and response
-validation.
+Native transports for typed `mb-printer-core` action plans. Plan preflight,
+physical chunking, pacing, response validation, progress, and cancellation live
+in the shared `mb-printer-executor` crate.
 
 Platform integrations are opt-in Cargo features so headless consumers retain a
 portable dependency graph:
@@ -12,16 +12,75 @@ portable dependency graph:
 - `bluetooth-rfcomm`: direct Linux RFCOMM socket discovery/connect without privileged TTY binding.
 - `usb`: panic-free explicit-context identity/bulk-interface discovery, automatic
   endpoint selection, descriptor identity, and independent command/raster limits.
-- `ble`: blocking compatibility transports plus Tokio-native discovery and
-  `AsyncBtleplugTransport` connect/write/notification APIs.
+- `ble`: Tokio-native discovery and model-profiled `BtleplugTransport` APIs.
+- `blocking`: native-only `BlockingPrinterClient` backed by one dedicated
+  worker thread and current-thread Tokio runtime (currently for BLE connection).
 - `wifi`: Brother PJL configuration plus reusable bounded IPP status/media
   queries and candidate probing.
-- `snmp`: bounded, allowlisted SNMPv2c property reads and Brother firmware
-  inventory inspection. `snmp-v3` adds RustCrypto-backed SNMPv3 authPriv.
 - `native-input`: bounded PDF/PNG/JPEG/SVG filesystem ingestion.
 
 The backend traits remain public for deterministic tests and alternative
 platform integrations. No hardware feature is enabled by default.
+
+## Execution
+
+Async is the canonical API. The application owns the Tokio runtime:
+
+```rust,no_run
+use std::{num::NonZeroUsize, time::Duration};
+use mb_printer_core::capabilities;
+use mb_printer_executor::Transport;
+use mb_printer_native::transports::ble::{BtleplugConnectOptions, BtleplugTransport};
+
+# async fn print(address: &str, plan: &mb_printer_core::protocol::Plan)
+#     -> Result<(), Box<dyn std::error::Error>> {
+let printer = capabilities::by_id("m02").ok_or("unknown printer")?;
+let ble = printer.ble_gatt().ok_or("model does not support BLE")?;
+let options = BtleplugConnectOptions {
+    scan_timeout: Duration::from_secs(5),
+    payload_limit: NonZeroUsize::new(512).unwrap(),
+};
+let mut transport = BtleplugTransport::connect(address, ble, options).await?;
+let progress = mb_printer_executor::execute(plan, &mut transport).await?;
+transport.disconnect().await?;
+println!("wrote {} bytes", progress.bytes_written);
+# Ok(())
+# }
+```
+
+When a model capability declares Phomemo credit flow, the transport requires
+its notification characteristic, waits for one `01 <credits>` grant per write,
+and applies the printer's `02 <limit-le16>` maximum. The shared executor
+re-reads that negotiated limit before raster chunking.
+
+Synchronous applications can opt into `blocking`. This facade owns one worker
+runtime rather than nesting a runtime on the caller's thread:
+
+```rust,no_run
+use mb_printer_native::blocking::BlockingPrinterClient;
+# fn print(
+#     address: &str,
+#     ble: mb_printer_core::capabilities::BleGattCapabilities,
+#     options: mb_printer_native::transports::ble::BtleplugConnectOptions,
+#     plan: mb_printer_core::protocol::Plan,
+# ) -> Result<(), Box<dyn std::error::Error>> {
+let mut client = BlockingPrinterClient::connect_btleplug(
+    address.to_owned(),
+    ble,
+    options,
+)?;
+let progress = client.execute(plan)?;
+client.disconnect()?;
+println!("wrote {} bytes", progress.bytes_written);
+# Ok(())
+# }
+```
+
+Catalogue models own their GATT profiles; callers never provide FF02 or FF03
+UUIDs independently. FF02 is accepted only with write-without-response. FF03
+may be absent when the model declares it optional. Cancellation never triggers
+an automatic retry, including when a write's outcome is unknown; reconnect and
+retry policy belongs to the caller.
 
 ## Qualified SNMP inspection
 

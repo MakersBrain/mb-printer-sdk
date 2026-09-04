@@ -337,3 +337,60 @@ fn retail_barcode_check_digits_are_enforced() {
         .replace("MB-42", "4006381333930");
     assert!(render::render(&Document::from_json(&bad).unwrap(), Default::default()).is_err())
 }
+
+/// Wraps an sfnt font in an uncompressed WOFF1 container, so the decoder can be exercised without a fixture file.
+fn woff1(sfnt: &[u8]) -> Vec<u8> {
+    let tables = u16::from_be_bytes([sfnt[4], sfnt[5]]) as usize;
+    let mut directory = Vec::new();
+    let mut body = Vec::new();
+    let header_length = 44 + tables * 20;
+    for index in 0..tables {
+        let entry = &sfnt[12 + index * 16..12 + index * 16 + 16];
+        let offset = u32::from_be_bytes([entry[8], entry[9], entry[10], entry[11]]) as usize;
+        let length = u32::from_be_bytes([entry[12], entry[13], entry[14], entry[15]]) as usize;
+        directory.extend_from_slice(&entry[0..4]);
+        directory.extend_from_slice(&((header_length + body.len()) as u32).to_be_bytes());
+        directory.extend_from_slice(&(length as u32).to_be_bytes());
+        directory.extend_from_slice(&(length as u32).to_be_bytes());
+        directory.extend_from_slice(&entry[4..8]);
+        body.extend_from_slice(&sfnt[offset..offset + length]);
+        body.resize(body.len().div_ceil(4) * 4, 0);
+    }
+    let mut out = Vec::from(*b"wOFF");
+    out.extend_from_slice(&sfnt[0..4]);
+    out.extend_from_slice(&((header_length + body.len()) as u32).to_be_bytes());
+    out.extend_from_slice(&(tables as u16).to_be_bytes());
+    out.extend_from_slice(&0u16.to_be_bytes());
+    out.extend_from_slice(&(sfnt.len() as u32).to_be_bytes());
+    out.extend_from_slice(&[0; 4]);
+    out.extend_from_slice(&[0; 20]);
+    out.extend_from_slice(&directory);
+    out.extend_from_slice(&body);
+    out
+}
+
+#[test]
+fn a_web_face_renders_the_same_as_the_sfnt_it_wraps() {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    use sha2::{Digest, Sha256};
+    let document = |data: &str, media: &str| {
+        let hash = format!("{:x}", Sha256::digest(STANDARD.decode(data).unwrap()));
+        Document::from_json(
+            &DOC.replace("\"text\":\"MB 42\",", "\"text\":\"A\",\"fontResource\":\"demo-font\",")
+                .replace(
+                    "\"resources\":[]",
+                    &format!(
+                        "\"resources\":[{{\"id\":\"demo-font\",\"mediaType\":\"{media}\",\"sha256\":\"{hash}\",\"dataBase64\":\"{data}\"}}]"
+                    ),
+                ),
+        )
+        .unwrap()
+    };
+    let sfnt = STANDARD.decode(DEMO_FONT).unwrap();
+    let wrapped = STANDARD.encode(woff1(&sfnt));
+    let from_ttf = render::render(&document(DEMO_FONT, "font/ttf"), Default::default()).unwrap();
+    let from_woff = render::render(&document(&wrapped, "font/woff"), Default::default()).unwrap();
+    assert_eq!(from_ttf, from_woff);
+    let corrupt = STANDARD.encode([b"wOF2".as_slice(), &[0; 32]].concat());
+    assert!(render::render(&document(&corrupt, "font/woff2"), Default::default()).is_err());
+}

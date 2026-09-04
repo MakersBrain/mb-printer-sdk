@@ -43,11 +43,23 @@ fn command(name: &str, bytes: Vec<u8>) -> Action {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BrotherStatus {
+    pub series_code: u8,
+    pub model_code: u8,
+    pub country_code: u8,
+    pub error_bytes: [u8; 2],
     pub media_width_mm: u8,
     pub media_length_mm: u8,
     pub media_type: &'static str,
+    /// Model-dependent status byte. Older models use this as a media record;
+    /// newer QL firmware can report a fixed model-specific value instead.
+    pub status_byte_14: u8,
     pub status_type: &'static str,
     pub phase: &'static str,
+    pub phase_number: u16,
+    pub notification_number: u8,
+    pub extension_status: u8,
+    /// Model-dependent tape/cassette fields at offsets 27 through 29.
+    pub tape_info: [u8; 3],
     pub errors: Vec<&'static str>,
 }
 
@@ -84,6 +96,10 @@ pub fn parse_status(data: &[u8]) -> Result<BrotherStatus, &'static str> {
         }
     }
     Ok(BrotherStatus {
+        series_code: data[3],
+        model_code: data[4],
+        country_code: data[5],
+        error_bytes: [data[8], data[9]],
         media_width_mm: data[10],
         media_length_mm: data[17],
         media_type: match data[11] {
@@ -92,10 +108,12 @@ pub fn parse_status(data: &[u8]) -> Result<BrotherStatus, &'static str> {
             0x0b => "die-cut",
             _ => "unknown",
         },
+        status_byte_14: data[14],
         status_type: match data[18] {
             0 => "reply to status request",
             1 => "printing completed",
             2 => "error",
+            4 => "turned off",
             5 => "notification",
             6 => "phase change",
             _ => "unknown",
@@ -105,6 +123,10 @@ pub fn parse_status(data: &[u8]) -> Result<BrotherStatus, &'static str> {
             1 => "printing",
             _ => "unknown",
         },
+        phase_number: u16::from_le_bytes([data[20], data[21]]),
+        notification_number: data[22],
+        extension_status: data[24],
+        tape_info: [data[27], data[28], data[29]],
         errors,
     })
 }

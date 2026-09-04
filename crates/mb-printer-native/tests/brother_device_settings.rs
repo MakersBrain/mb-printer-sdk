@@ -2,10 +2,10 @@
 
 use mb_printer_core::discovery::SettingValue;
 use mb_printer_native::{
-    Transport, WaitOutcome,
+    NotificationSupport, Transport, TransportError, TransportFuture, WaitOutcome, WriteKind,
     brother_device_settings::{DeviceSettingKind, model_profile, retrieve_device_settings},
 };
-use std::collections::VecDeque;
+use std::{collections::VecDeque, time::Duration};
 
 #[derive(Default)]
 struct FakeTransport {
@@ -29,58 +29,81 @@ impl Transport for FakeTransport {
         4096
     }
 
-    fn subscribe_notifications(&mut self) -> Result<(), String> {
-        Ok(())
+    fn subscribe_notifications(
+        &mut self,
+    ) -> TransportFuture<'_, Result<NotificationSupport, TransportError>> {
+        Box::pin(async { Ok(NotificationSupport::Unavailable) })
     }
 
-    fn write(&mut self, bytes: &[u8]) -> Result<(), String> {
-        self.writes.push(bytes.to_vec());
-        let response = match bytes {
-            b"\x1b@\x1biS" => {
-                let mut status = vec![0; 32];
-                status[3] = self.identity.0;
-                status[4] = self.identity.1;
-                Some(status)
+    fn write<'a>(
+        &'a mut self,
+        bytes: &'a [u8],
+        _: WriteKind,
+    ) -> TransportFuture<'a, Result<(), TransportError>> {
+        Box::pin(async move {
+            self.writes.push(bytes.to_vec());
+            let response = match bytes {
+                b"\x1b@\x1biS" => {
+                    let mut status = vec![0; 32];
+                    status[3] = self.identity.0;
+                    status[4] = self.identity.1;
+                    Some(status)
+                }
+                b"\x1biUa\x01" => {
+                    let mut response = vec![0; 32];
+                    response[30] = 1;
+                    response[31] = 0xff;
+                    Some(response)
+                }
+                b"\x1biXc1\x00\x00" => Some(vec![0, 0, 9]),
+                b"\x1biXe1\x00\x00\x01" => Some(vec![0, 0, 130]),
+                b"\x1biXe1\x00\x00\x02" => Some(vec![0, 0, 126]),
+                b"\x1biXO1\x00\x00" => Some(vec![0, 0, 1]),
+                b"\x1bia\x01" | b"\x1bia\xff" => None,
+                _ => {
+                    return Err(TransportError::new(
+                        mb_printer_native::TransportErrorKind::InvalidConfiguration,
+                        "unexpected command",
+                    ));
+                }
+            };
+            if self.fail_setting.as_deref() == Some(bytes) {
+                return Ok(());
             }
-            b"\x1biUa\x01" => {
-                let mut response = vec![0; 32];
-                response[30] = 1;
-                response[31] = 0xff;
-                Some(response)
+            if let Some(response) = response {
+                self.responses.push_back(response);
             }
-            b"\x1biXc1\x00\x00" => Some(vec![0, 0, 9]),
-            b"\x1biXe1\x00\x00\x01" => Some(vec![0, 0, 130]),
-            b"\x1biXe1\x00\x00\x02" => Some(vec![0, 0, 126]),
-            b"\x1biXO1\x00\x00" => Some(vec![0, 0, 1]),
-            b"\x1bia\x01" | b"\x1bia\xff" => None,
-            _ => return Err("unexpected command".into()),
-        };
-        if self.fail_setting.as_deref() == Some(bytes) {
-            return Ok(());
-        }
-        if let Some(response) = response {
-            self.responses.push_back(response);
-        }
-        Ok(())
+            Ok(())
+        })
     }
 
-    fn delay_monotonic(&mut self, _: u64) {}
+    fn delay(&mut self, _: Duration) -> TransportFuture<'_, ()> {
+        Box::pin(async {})
+    }
 
-    fn wait_response(&mut self, _: u64) -> Result<WaitOutcome, String> {
-        Ok(self
-            .responses
-            .pop_front()
-            .map(WaitOutcome::Response)
-            .unwrap_or(WaitOutcome::Timeout))
+    fn wait_response(
+        &mut self,
+        _: Duration,
+    ) -> TransportFuture<'_, Result<WaitOutcome, TransportError>> {
+        Box::pin(async move {
+            Ok(self
+                .responses
+                .pop_front()
+                .map(WaitOutcome::Response)
+                .unwrap_or(WaitOutcome::Timeout))
+        })
+    }
+    fn disconnect(&mut self) -> TransportFuture<'_, Result<(), TransportError>> {
+        Box::pin(async { Ok(()) })
     }
 }
 
-#[test]
-fn ql_800_retrieval_uses_verified_commands_and_decodes_values() {
+#[tokio::test]
+async fn ql_800_retrieval_uses_verified_commands_and_decodes_values() {
     let profile = model_profile("QL-800").unwrap();
     let mut transport = FakeTransport::matching(0x34, 0x38);
 
-    let inspection = retrieve_device_settings(&mut transport, profile);
+    let inspection = retrieve_device_settings(&mut transport, profile).await;
 
     assert_eq!(inspection.error, None);
     assert_eq!(inspection.observations.len(), 5);
@@ -119,20 +142,20 @@ fn ql_800_retrieval_uses_verified_commands_and_decodes_values() {
     );
 }
 
-#[test]
-fn identity_mismatch_fails_closed_before_settings_mode() {
+#[tokio::test]
+async fn identity_mismatch_fails_closed_before_settings_mode() {
     let profile = model_profile("ql-1110nwb").unwrap();
     let mut transport = FakeTransport::matching(0x34, 0x43);
 
-    let inspection = retrieve_device_settings(&mut transport, profile);
+    let inspection = retrieve_device_settings(&mut transport, profile).await;
 
     assert!(inspection.error.unwrap().contains("identity mismatch"));
     assert!(inspection.observations.is_empty());
     assert_eq!(transport.writes, vec![b"\x1b@\x1biS".to_vec()]);
 }
 
-#[test]
-fn failed_read_stops_correlation_and_still_exits_settings_mode() {
+#[tokio::test]
+async fn failed_read_stops_correlation_and_still_exits_settings_mode() {
     let profile = model_profile("pt-p710bt").unwrap();
     let failed = b"\x1biXc1\x00\x00".to_vec();
     let mut transport = FakeTransport {
@@ -140,7 +163,7 @@ fn failed_read_stops_correlation_and_still_exits_settings_mode() {
         ..FakeTransport::matching(0x30, 0x76)
     };
 
-    let inspection = retrieve_device_settings(&mut transport, profile);
+    let inspection = retrieve_device_settings(&mut transport, profile).await;
 
     assert_eq!(inspection.observations.len(), 2);
     assert_eq!(

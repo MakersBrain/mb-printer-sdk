@@ -95,9 +95,31 @@ pub struct Options {
     /// does, so the per-chunk pacing the Bluetooth drivers need is dead time.
     pub streaming: bool,
     /// Send the raster LZO-compressed. This mirrors Print Master's ordinary
-    /// monochrome `img2NvCompress` path; its `GS 0xbc` red/black path is a
-    /// different raster format and must not be substituted here.
+    /// monochrome `img2NvCompress` container. No bundled printer currently
+    /// qualifies this mode: physical M110s testing showed that it misprints
+    /// the compressed stream, so plan construction rejects `true`.
     pub lzo: bool,
+    /// Explicit Phomemo media tracking mode. When omitted, the legacy
+    /// `continuous` boolean selects gap or continuous media.
+    pub phomemo_media: Option<PhomemoMedia>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum PhomemoMedia {
+    Gap,
+    Continuous,
+    BlackMark,
+}
+
+impl PhomemoMedia {
+    const fn command(self) -> u8 {
+        match self {
+            Self::Gap => 0x0a,
+            Self::Continuous => 0x0b,
+            Self::BlackMark => 0x26,
+        }
+    }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -128,6 +150,7 @@ impl Default for Options {
             high_quality: true,
             streaming: false,
             lzo: false,
+            phomemo_media: None,
         }
     }
 }
@@ -266,6 +289,11 @@ fn plan_inner(
     if o.cut && o.cut_every == 0 {
         return Err(PlanError::Range("cut every"));
     }
+    if o.lzo {
+        return Err(PlanError::Unsupported(
+            "LZO compression is not qualified for bundled printers",
+        ));
+    }
     if printer.protocol != Protocol::Tspl && o.copies > 1 {
         let mut single = o.clone();
         single.copies = 1;
@@ -305,6 +333,14 @@ fn plan_inner(
     let mut a = vec![Action::JobBoundary {
         kind: Boundary::Start,
     }];
+    if printer
+        .ble_gatt()
+        .is_some_and(|gatt| gatt.flow_control.is_some())
+    {
+        // Credit-controlled GATT links must subscribe before their first
+        // write. Other transports treat this as an idempotent capability probe.
+        a.push(Action::SubscribeNotifications);
+    }
     match printer.protocol {
         Protocol::MSeries => {
             cmd(&mut a, "ESC @ init", vec![0x1b, 0x40]);
@@ -382,18 +418,11 @@ fn plan_inner(
             cmd(
                 &mut a,
                 "media type",
-                vec![0x1f, 0x11, if o.continuous { 0x0b } else { 0x0a }],
+                vec![0x1f, 0x11, phomemo_media(o).command()],
             );
             delay(&mut a, 30);
-            if o.lzo {
-                cmd(&mut a, "compression on", vec![0x1f, 0x11, 0x35, 1]);
-                cmd(&mut a, "GS v 0 raster", vec![0x1d, 0x76, 0x30, 0]);
-                raster_paced(&mut a, printer, lzo_raster(r)?, o.streaming);
-                cmd(&mut a, "compression off", vec![0x1f, 0x11, 0x35, 0]);
-            } else {
-                cmd(&mut a, "GS v 0 raster header", header(r));
-                raster_paced(&mut a, printer, r.data.clone(), o.streaming);
-            }
+            cmd(&mut a, "GS v 0 raster header", header(r));
+            raster_paced(&mut a, printer, r.data.clone(), o.streaming);
             delay(&mut a, 300);
             cmd(
                 &mut a,
@@ -422,7 +451,7 @@ fn plan_inner(
             cmd(
                 &mut a,
                 "media type",
-                vec![0x1f, 0x11, if o.continuous { 0x0b } else { 0x0a }],
+                vec![0x1f, 0x11, phomemo_media(o).command()],
             );
             delay(&mut a, 30);
             let mut h = vec![0x1b, 0x40];
@@ -578,6 +607,14 @@ fn plan_inner(
         source_commit: SOURCE_COMMIT.into(),
         actions: a,
     })
+}
+
+const fn phomemo_media(options: &Options) -> PhomemoMedia {
+    match options.phomemo_media {
+        Some(media) => media,
+        None if options.continuous => PhomemoMedia::Continuous,
+        None => PhomemoMedia::Gap,
+    }
 }
 
 fn plan_owned_bytes(actions: &[Action]) -> Result<usize, PlanError> {
