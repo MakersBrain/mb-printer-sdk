@@ -118,15 +118,8 @@ async fn execute_inner<T: Transport + ?Sized>(
     );
     let transport_span = transport_lifecycle_span(&span, payload_limit, command_limit);
     let started = Instant::now();
-    let result = execute_actions(
-        plan,
-        transport,
-        options,
-        payload_limit,
-        progress_callback,
-        &transport_span,
-    )
-    .await;
+    let result =
+        execute_actions(plan, transport, options, progress_callback, &transport_span).await;
     record_execution_result(&span, started, &result);
     transport_span.record(
         "outcome",
@@ -221,7 +214,6 @@ async fn execute_actions<T: Transport + ?Sized>(
     plan: &Plan,
     transport: &mut T,
     options: ExecutionOptions<'_>,
-    payload_limit: usize,
     progress_callback: &mut ProgressCallback<'_>,
     transport_span: &tracing::Span,
 ) -> Result<Progress, ExecuteError> {
@@ -279,6 +271,13 @@ async fn execute_actions<T: Transport + ?Sized>(
                 logical_chunk,
                 delay_after_each_physical_write_ms,
             } => {
+                // Subscription can negotiate a smaller GATT flow limit after
+                // whole-plan preflight. Re-read it at the raster boundary so
+                // physical chunks honor the device's advertised maximum.
+                let payload_limit = transport.payload_limit();
+                if payload_limit == 0 {
+                    return Err(invalid(index, "zero negotiated transport payload limit"));
+                }
                 for logical in bytes.chunks(*logical_chunk) {
                     for piece in logical.chunks(payload_limit) {
                         check_cancelled(options.cancellation, &progress)?;

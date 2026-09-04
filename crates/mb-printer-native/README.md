@@ -48,6 +48,11 @@ println!("wrote {} bytes", progress.bytes_written);
 # }
 ```
 
+When a model capability declares Phomemo credit flow, the transport requires
+its notification characteristic, waits for one `01 <credits>` grant per write,
+and applies the printer's `02 <limit-le16>` maximum. The shared executor
+re-reads that negotiated limit before raster chunking.
+
 Synchronous applications can opt into `blocking`. This facade owns one worker
 runtime rather than nesting a runtime on the caller's thread:
 

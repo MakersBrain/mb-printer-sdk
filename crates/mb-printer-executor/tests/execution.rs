@@ -24,6 +24,7 @@ struct FakeTransport {
     waits: VecDeque<Result<WaitOutcome, TransportError>>,
     write_error: Option<TransportError>,
     subscribe_error: Option<TransportError>,
+    negotiated_limit_on_subscribe: Option<usize>,
 }
 
 impl Default for FakeTransport {
@@ -35,6 +36,7 @@ impl Default for FakeTransport {
             waits: VecDeque::new(),
             write_error: None,
             subscribe_error: None,
+            negotiated_limit_on_subscribe: None,
         }
     }
 }
@@ -52,6 +54,9 @@ impl Transport for FakeTransport {
         &mut self,
     ) -> TransportFuture<'_, Result<NotificationSupport, TransportError>> {
         self.events.push(Event::Subscribe);
+        if let Some(limit) = self.negotiated_limit_on_subscribe {
+            self.payload_limit = limit;
+        }
         let result = self
             .subscribe_error
             .take()
@@ -87,6 +92,36 @@ impl Transport for FakeTransport {
         self.events.push(Event::Disconnect);
         Box::pin(async { Ok(()) })
     }
+}
+
+#[test]
+fn raster_chunking_uses_limit_negotiated_during_subscription() {
+    let job = plan(
+        Protocol::M110,
+        vec![
+            Action::SubscribeNotifications,
+            Action::RasterWrite {
+                bytes: vec![1; 9],
+                logical_chunk: 9,
+                delay_after_each_physical_write_ms: 0,
+            },
+        ],
+    );
+    let mut fake = FakeTransport {
+        payload_limit: 64,
+        negotiated_limit_on_subscribe: Some(4),
+        ..Default::default()
+    };
+    block_on(execute(&job, &mut fake)).unwrap();
+    let lengths = fake
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            Event::Write(WriteKind::Raster, bytes) => Some(bytes.len()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(lengths, [4, 4, 1]);
 }
 
 fn plan(protocol: Protocol, actions: Vec<Action>) -> Plan {

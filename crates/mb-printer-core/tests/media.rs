@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-use mb_printer_core::{capabilities, media};
+use mb_printer_core::{
+    capabilities, media,
+    protocol::{self, Action, Options, Raster},
+};
 
 fn ids(model: &str) -> Vec<String> {
     let printer = capabilities::by_id(model).unwrap();
@@ -86,7 +89,6 @@ fn reported_media_resolves_to_a_named_roll() {
 
 #[test]
 fn streaming_transports_drop_the_chunk_pacing() {
-    use mb_printer_core::protocol::{self, Action, Options, Raster};
     let printer = capabilities::by_id("m110").unwrap();
     let raster = Raster {
         width_bytes: 48,
@@ -117,8 +119,7 @@ fn streaming_transports_drop_the_chunk_pacing() {
 }
 
 #[test]
-fn the_compressed_raster_frames_every_block_with_its_length() {
-    use mb_printer_core::protocol::{self, Action, Options, Raster};
+fn lzo_container_frames_every_block_but_is_not_qualified_for_m110() {
     let printer = capabilities::by_id("m110").unwrap();
     // Two blocks: the encoder cuts every 4096 bytes of packed raster.
     let raster = Raster {
@@ -136,7 +137,7 @@ fn the_compressed_raster_frames_every_block_with_its_length() {
     // Repeated bytes compress, so the wire carries far less than the raster.
     assert!(payload.len() < raster.data.len() / 4);
 
-    let plan = protocol::plan(
+    let error = protocol::plan(
         &printer,
         &raster,
         &Options {
@@ -144,21 +145,44 @@ fn the_compressed_raster_frames_every_block_with_its_length() {
             ..Options::default()
         },
     )
-    .unwrap();
-    let commands: Vec<&[u8]> = plan
-        .actions
-        .iter()
-        .filter_map(|action| match action {
-            Action::CommandWrite { bytes, .. } => Some(bytes.as_slice()),
-            _ => None,
-        })
-        .collect();
-    assert!(commands.contains(&[0x1f, 0x11, 0x35, 1].as_slice()));
-    assert!(commands.contains(&[0x1d, 0x76, 0x30, 0].as_slice()));
-    assert!(commands.contains(&[0x1f, 0x11, 0x35, 0].as_slice()));
-    assert!(
-        plan.actions
-            .iter()
-            .any(|action| matches!(action, Action::RasterWrite { bytes, .. } if bytes == &payload))
+    .unwrap_err();
+    assert_eq!(
+        error,
+        protocol::PlanError::Unsupported("LZO compression is not qualified for bundled printers")
     );
+}
+
+#[test]
+fn phomemo_black_mark_media_has_an_explicit_wire_mode() {
+    let printer = capabilities::by_id("m110").unwrap();
+    let raster = Raster {
+        width_bytes: 48,
+        height: 1,
+        data: vec![0; 48],
+    };
+    let plan = protocol::plan(
+        &printer,
+        &raster,
+        &Options {
+            continuous: true,
+            phomemo_media: Some(protocol::PhomemoMedia::BlackMark),
+            ..Options::default()
+        },
+    )
+    .unwrap();
+    assert!(plan.actions.iter().any(|action| matches!(
+        action,
+        Action::CommandWrite { name, bytes, .. }
+            if name == "media type" && bytes == &[0x1f, 0x11, 0x26]
+    )));
+}
+
+#[test]
+fn phomemo_media_mode_is_available_through_camel_case_json_options() {
+    let options: Options = serde_json::from_str(r#"{"phomemoMedia":"black-mark"}"#).unwrap();
+    assert_eq!(
+        options.phomemo_media,
+        Some(protocol::PhomemoMedia::BlackMark)
+    );
+    assert!(!options.continuous);
 }

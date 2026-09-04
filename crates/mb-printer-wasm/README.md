@@ -39,6 +39,10 @@ remain application responsibilities. WebUSB exposes independent atomic-command
 and physical-raster limits so a bulk endpoint can retain complete commands while
 chunking raster data to its qualified packet size. Web Bluetooth requires
 write-without-response and treats the notification characteristic as optional.
+For a capability whose `flowControl` is `phomemo-credit`, construct
+`WebBluetoothTransport` with `"phomemo-credit"` as its fourth argument. The
+adapter then consumes limit/credit frames internally and gates every write;
+the M110s capability marks its FF03 notification characteristic as required.
 
 Within this repository, editor integration tests may use the stable generated
 entrypoint `mb-printer-sdk/crates/mb-printer-wasm/pkg/web/mb_printer_wasm.js`

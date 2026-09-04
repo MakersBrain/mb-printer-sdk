@@ -18,6 +18,7 @@ export interface BluetoothCharacteristic extends EventTarget {
 export interface BluetoothWritableCharacteristic extends BluetoothCharacteristic {
   writeValueWithoutResponse?(bytes: BufferSource): Promise<void>;
 }
+export type BluetoothFlowControl = "none" | "phomemo-credit";
 const abortError = () => new DOMException("Operation aborted", "AbortError");
 const checkAbort = (signal?: AbortSignal) => { if (signal?.aborted) throw abortError(); };
 const unsupportedProfile = (message: string): Error => {
@@ -117,9 +118,62 @@ export async function inspectIppOverFetch(endpoint: string, requestJson: string,
 export class WebBluetoothTransport implements BrowserTransport {
   private readonly replies: Uint8Array[] = [];
   private readonly listeners: Array<(value: Uint8Array) => void> = [];
+  private readonly creditWaiters: Array<() => void> = [];
+  private credits = 0;
+  private negotiatedPayloadLimit?: number;
   private subscribed = false;
   constructor(private readonly writable: BluetoothWritableCharacteristic,
-    private readonly notifications?: BluetoothCharacteristic, public readonly payloadLimit = 512) {}
+    private readonly notifications?: BluetoothCharacteristic,
+    private readonly configuredPayloadLimit = 512,
+    private readonly flowControl: BluetoothFlowControl = "none") {
+    if (!Number.isSafeInteger(configuredPayloadLimit) || configuredPayloadLimit <= 0) {
+      throw new Error("invalid WebBluetooth payload limit");
+    }
+  }
+  get payloadLimit(): number {
+    return Math.min(this.configuredPayloadLimit, this.negotiatedPayloadLimit ?? this.configuredPayloadLimit);
+  }
+  private grantCredits(count: number): void {
+    while (count > 0 && this.creditWaiters.length > 0) {
+      count--;
+      this.creditWaiters.shift()?.();
+    }
+    this.credits = Math.min(Number.MAX_SAFE_INTEGER, this.credits + count);
+  }
+  private receiveNotification(bytes: Uint8Array): void {
+    if (this.flowControl === "phomemo-credit") {
+      if (bytes.length === 2 && bytes[0] === 0x01) {
+        this.grantCredits(bytes[1]);
+        return;
+      }
+      if (bytes.length === 3 && bytes[0] === 0x02) {
+        const limit = bytes[1] | (bytes[2] << 8);
+        if (limit > 0) this.negotiatedPayloadLimit = limit;
+        return;
+      }
+    }
+    const listener = this.listeners.shift();
+    if (listener) listener(bytes); else this.replies.push(bytes);
+  }
+  private takeCredit(signal?: AbortSignal): Promise<void> {
+    checkAbort(signal);
+    if (this.credits > 0) {
+      this.credits--;
+      return Promise.resolve();
+    }
+    return new Promise((resolve, reject) => {
+      const grant = () => { cleanup(); resolve(); };
+      const abort = () => { remove(); reject(abortError()); };
+      const remove = () => {
+        const index = this.creditWaiters.indexOf(grant);
+        if (index >= 0) this.creditWaiters.splice(index, 1);
+        signal?.removeEventListener("abort", abort);
+      };
+      const cleanup = remove;
+      this.creditWaiters.push(grant);
+      signal?.addEventListener("abort", abort, { once: true });
+    });
+  }
   async subscribeNotifications(signal?: AbortSignal): Promise<boolean> {
     checkAbort(signal);
     const notifications = this.notifications;
@@ -129,8 +183,7 @@ export class WebBluetoothTransport implements BrowserTransport {
         const view = notifications.value;
         if (!view) return;
         const bytes = new Uint8Array(view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength));
-        const listener = this.listeners.shift();
-        if (listener) listener(bytes); else this.replies.push(bytes);
+        this.receiveNotification(bytes);
       });
       await raceAbort(notifications.startNotifications(), signal);
       this.subscribed = true;
@@ -140,6 +193,11 @@ export class WebBluetoothTransport implements BrowserTransport {
   async write(bytes: Uint8Array, signal?: AbortSignal): Promise<void> {
     checkAbort(signal);
     if (bytes.length > this.payloadLimit) throw new Error("WebBluetooth payload exceeds negotiated limit");
+    if (this.flowControl === "phomemo-credit") {
+      if (!this.subscribed) throw new Error("WebBluetooth credit flow requires notification subscription");
+      await this.takeCredit(signal);
+      if (bytes.length > this.payloadLimit) throw new Error("WebBluetooth payload exceeds printer flow limit");
+    }
     const payload = Uint8Array.from(bytes).buffer;
     const operation = this.writable.writeValueWithoutResponse?.(payload)
       ?? Promise.reject(unsupportedProfile("Bluetooth profile requires write-without-response"));
@@ -161,7 +219,11 @@ export class WebBluetoothTransport implements BrowserTransport {
       globalThis.setTimeout(() => { if (!settled) { settled = true; cleanup(); resolve({ kind: "timeout" }); } }, timeoutMs);
     });
   }
-  async disconnect(signal?: AbortSignal): Promise<void> { checkAbort(signal); }
+  async disconnect(signal?: AbortSignal): Promise<void> {
+    checkAbort(signal);
+    this.credits = 0;
+    this.negotiatedPayloadLimit = undefined;
+  }
 }
 
 export interface UsbTransferResult { data?: DataView | null }

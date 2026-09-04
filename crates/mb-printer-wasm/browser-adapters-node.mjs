@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
+import { WebBluetoothTransport } from "./dist/browser-adapters.js";
 
 const require = createRequire(import.meta.url);
 const wasm = require(process.argv[2] ?? "../../target/wasm-node-pkg/mb_printer_wasm.js");
@@ -102,4 +103,32 @@ mock = {...transport(), async write() { writes++; await new Promise(resolve => s
 setTimeout(() => controller.abort(),2);
 const unknown = await executePlan([command([1])],mock,undefined,controller.signal);
 assert.equal(unknown.status,"outcome-unknown"); assert.equal(writes,1,"ambiguous write must not retry");
+
+class MockCharacteristic extends EventTarget {
+  writes = [];
+  value = null;
+  async startNotifications() { return this; }
+  async writeValueWithoutResponse(bytes) { this.writes.push([...new Uint8Array(bytes)]); }
+  notify(bytes) {
+    const value = Uint8Array.from(bytes);
+    this.value = new DataView(value.buffer);
+    this.dispatchEvent(new Event("characteristicvaluechanged"));
+  }
+}
+const writable = new MockCharacteristic(), notifications = new MockCharacteristic();
+const creditTransport = new WebBluetoothTransport(writable, notifications, 64, "phomemo-credit");
+await creditTransport.subscribeNotifications();
+let settled = false;
+const creditedWrite = creditTransport.write(Uint8Array.of(1,2,3)).then(() => { settled = true; });
+await Promise.resolve();
+assert.equal(settled, false, "credit-controlled write must wait for a grant");
+notifications.notify([0x02, 20, 0]);
+notifications.notify([0x01, 1]);
+await creditedWrite;
+assert.deepEqual(writable.writes, [[1,2,3]]);
+assert.equal(creditTransport.payloadLimit, 20);
+notifications.notify([0x1a,0x08,0xa2]);
+assert.deepEqual(await creditTransport.waitForResponse(10), {
+  kind: "response", bytes: Uint8Array.of(0x1a,0x08,0xa2),
+});
 console.log("Node browser-adapter execution semantics passed");

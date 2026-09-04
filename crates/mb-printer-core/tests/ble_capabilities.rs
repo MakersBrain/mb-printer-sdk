@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 use mb_printer_core::capabilities::{
-    self, BleSupport, BleWriteType, NotificationRequirement, PrinterDefinition,
+    self, BleFlowControl, BleSupport, BleWriteType, NotificationRequirement, PrinterDefinition,
 };
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
@@ -85,8 +85,39 @@ fn reviewed_models_have_exact_ff02_ff03_profile() {
         assert_eq!(gatt.write_type, BleWriteType::WithoutResponse);
         let notification = gatt.notification.as_ref().unwrap();
         assert_eq!(notification.characteristic, Uuid::parse_str(FF03).unwrap());
-        assert_eq!(notification.requirement, NotificationRequirement::Optional);
+        assert_eq!(
+            notification.requirement,
+            if *id == "m110s" {
+                NotificationRequirement::Required
+            } else {
+                NotificationRequirement::Optional
+            }
+        );
     }
+}
+
+#[test]
+fn only_hardware_qualified_m110s_enables_credit_flow() {
+    for printer in capabilities::bundled() {
+        let flow = printer.ble_gatt().and_then(|gatt| gatt.flow_control);
+        if printer.id == "m110s" {
+            assert_eq!(flow, Some(BleFlowControl::PhomemoCredit));
+        } else {
+            assert_eq!(flow, None, "{} must remain unqualified", printer.id);
+        }
+    }
+
+    let printer = capabilities::by_id("m110s").unwrap();
+    let raster = mb_printer_core::protocol::Raster {
+        width_bytes: 48,
+        height: 1,
+        data: vec![0; 48],
+    };
+    let plan = mb_printer_core::protocol::plan(&printer, &raster, &Default::default()).unwrap();
+    assert!(matches!(
+        plan.actions.get(1),
+        Some(mb_printer_core::protocol::Action::SubscribeNotifications)
+    ));
 }
 
 #[test]

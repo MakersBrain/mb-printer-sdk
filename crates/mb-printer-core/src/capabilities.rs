@@ -66,6 +66,14 @@ pub struct BleGattCapabilities {
     pub write_characteristic: Uuid,
     pub write_type: BleWriteType,
     pub notification: Option<BleNotification>,
+    #[serde(default)]
+    pub flow_control: Option<BleFlowControl>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum BleFlowControl {
+    PhomemoCredit,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

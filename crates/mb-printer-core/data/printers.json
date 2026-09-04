@@ -218,7 +218,7 @@
     {
       "id": "m110s",
       "name": "M110S",
-      "ble": {"kind": "gatt", "capabilities": {"writeCharacteristic": "0000ff02-0000-1000-8000-00805f9b34fb", "writeType": "without-response", "notification": {"characteristic": "0000ff03-0000-1000-8000-00805f9b34fb", "requirement": "optional"}}},
+      "ble": {"kind": "gatt", "capabilities": {"writeCharacteristic": "0000ff02-0000-1000-8000-00805f9b34fb", "writeType": "without-response", "notification": {"characteristic": "0000ff03-0000-1000-8000-00805f9b34fb", "requirement": "required"}, "flowControl": "phomemo-credit"}},
       "group": "M110 Series",
       "description": "Narrow label maker, right-aligned roll (48mm)",
       "protocol": "m110",

@@ -21,6 +21,8 @@ reconnect and retry decisions always belong to the caller.
 Catalogue models own their BLE GATT profile. BLE uses the declared FF02
 characteristic with write-without-response only; an FF03 notification
 characteristic declared optional may be absent without making connection fail.
+The hardware-qualified M110s profile requires FF03 and gates every write on its
+credit notifications; flow-control frames are never exposed as status replies.
 
 The portable rendering slice uses integer micrometre-to-dot conversion,
 deterministic bilevel dithering, raster rotation/head fitting, shapes, bitmap

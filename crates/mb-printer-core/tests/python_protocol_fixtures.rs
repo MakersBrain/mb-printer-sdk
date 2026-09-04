@@ -106,6 +106,7 @@ fn every_plan_matches_executed_python_actions() {
             // The reference fixtures predate both and describe a paced, uncompressed job.
             streaming: false,
             lzo: false,
+            phomemo_media: None,
         };
         let input = &case["inputRaster"];
         let input_bytes = decode_hex(input["hex"].as_str().unwrap());

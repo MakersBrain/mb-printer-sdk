@@ -1156,12 +1156,90 @@ pub mod ble {
     };
     use futures_util::StreamExt as _;
     use mb_printer_core::capabilities::{
-        BleGattCapabilities, BleWriteType, NotificationRequirement,
+        BleFlowControl, BleGattCapabilities, BleWriteType, NotificationRequirement,
     };
-    use std::num::NonZeroUsize;
+    use std::{collections::VecDeque, num::NonZeroUsize};
     use tracing::Instrument as _;
 
     const NOTIFICATION_QUEUE_CAPACITY: usize = 32;
+
+    #[derive(Debug, Default)]
+    struct CreditFlowState {
+        credits: usize,
+        maximum_payload: Option<usize>,
+        pending_responses: VecDeque<Vec<u8>>,
+    }
+
+    impl CreditFlowState {
+        fn observe(&mut self, bytes: &[u8]) -> bool {
+            match bytes {
+                [0x01, credits] => {
+                    self.credits = self.credits.saturating_add(usize::from(*credits));
+                    true
+                }
+                [0x02, low, high] => {
+                    let limit = usize::from(u16::from_le_bytes([*low, *high]));
+                    if limit != 0 {
+                        self.maximum_payload = Some(limit);
+                    }
+                    true
+                }
+                _ => false,
+            }
+        }
+    }
+
+    async fn receive_for_credit(
+        flow: &mut CreditFlowState,
+        notifications: &mut tokio::sync::mpsc::Receiver<Vec<u8>>,
+    ) -> Result<(), TransportError> {
+        while flow.credits == 0 {
+            let bytes = notifications.recv().await.ok_or_else(|| {
+                ble_error(
+                    TransportErrorKind::Disconnected,
+                    "BLE notification stream ended",
+                )
+            })?;
+            if !flow.observe(&bytes) {
+                if flow.pending_responses.len() == NOTIFICATION_QUEUE_CAPACITY {
+                    return Err(ble_error(
+                        TransportErrorKind::Io,
+                        "BLE response queue is full while waiting for write credit",
+                    ));
+                }
+                flow.pending_responses.push_back(bytes);
+            }
+        }
+        flow.credits -= 1;
+        Ok(())
+    }
+
+    async fn receive_flow_response(
+        flow: &mut CreditFlowState,
+        notifications: &mut tokio::sync::mpsc::Receiver<Vec<u8>>,
+        timeout: Duration,
+    ) -> Result<WaitOutcome, TransportError> {
+        if let Some(bytes) = flow.pending_responses.pop_front() {
+            return Ok(WaitOutcome::Response(bytes));
+        }
+        let response = async {
+            loop {
+                let bytes = notifications.recv().await.ok_or_else(|| {
+                    ble_error(
+                        TransportErrorKind::Disconnected,
+                        "BLE notification stream ended",
+                    )
+                })?;
+                if !flow.observe(&bytes) {
+                    return Ok(WaitOutcome::Response(bytes));
+                }
+            }
+        };
+        match tokio::time::timeout(timeout, response).await {
+            Ok(outcome) => outcome,
+            Err(_) => Ok(WaitOutcome::Timeout),
+        }
+    }
 
     #[derive(Debug, Clone, Copy)]
     pub struct BtleplugConnectOptions {
@@ -1301,6 +1379,13 @@ pub mod ble {
             },
         };
 
+        if capabilities.flow_control.is_some() && notification.is_none() {
+            return Err(ble_error(
+                TransportErrorKind::Connection,
+                "BLE flow control requires a notification characteristic",
+            ));
+        }
+
         Ok((write, notification))
     }
 
@@ -1365,6 +1450,7 @@ pub mod ble {
         notifications: Option<tokio::sync::mpsc::Receiver<Vec<u8>>>,
         forwarding_task: Option<tokio::task::JoinHandle<()>>,
         payload_limit: NonZeroUsize,
+        credit_flow: Option<CreditFlowState>,
     }
 
     impl BtleplugTransport {
@@ -1464,6 +1550,8 @@ pub mod ble {
                 notifications: None,
                 forwarding_task: None,
                 payload_limit: options.payload_limit,
+                credit_flow: (capabilities.flow_control == Some(BleFlowControl::PhomemoCredit))
+                    .then(CreditFlowState::default),
             })
         }
 
@@ -1523,6 +1611,31 @@ pub mod ble {
 
         async fn write_inner(&mut self, bytes: &[u8]) -> Result<(), TransportError> {
             validate_write_state(self.notification_state, bytes.len(), self.payload_limit)?;
+            if let Some(flow) = &mut self.credit_flow {
+                if self.notification_state != NotificationState::Subscribed {
+                    return Err(ble_error(
+                        TransportErrorKind::InvalidConfiguration,
+                        "BLE credit flow requires notification subscription before writing",
+                    ));
+                }
+                let notifications = self
+                    .notifications
+                    .as_mut()
+                    .expect("subscribed credit-controlled notification state has a receiver");
+                if let Err(error) = receive_for_credit(flow, notifications).await {
+                    self.notification_state = NotificationState::Disconnected;
+                    return Err(error);
+                }
+                if flow
+                    .maximum_payload
+                    .is_some_and(|maximum| bytes.len() > maximum)
+                {
+                    return Err(ble_error(
+                        TransportErrorKind::InvalidConfiguration,
+                        "BLE write exceeds the printer-advertised flow limit",
+                    ));
+                }
+            }
             self.peripheral
                 .write(&self.write, bytes, WriteType::WithoutResponse)
                 .await
@@ -1530,6 +1643,23 @@ pub mod ble {
         }
 
         async fn wait_inner(&mut self, timeout: Duration) -> Result<WaitOutcome, TransportError> {
+            if let Some(flow) = &mut self.credit_flow {
+                if self.notification_state != NotificationState::Subscribed {
+                    return Ok(WaitOutcome::Unavailable);
+                }
+                let notifications = self
+                    .notifications
+                    .as_mut()
+                    .expect("subscribed credit-controlled notification state has a receiver");
+                let outcome = receive_flow_response(flow, notifications, timeout).await;
+                if outcome
+                    .as_ref()
+                    .is_err_and(|error| error.kind == TransportErrorKind::Disconnected)
+                {
+                    self.notification_state = NotificationState::Disconnected;
+                }
+                return outcome;
+            }
             wait_notification_state(
                 &mut self.notification_state,
                 &mut self.notifications,
@@ -1558,7 +1688,12 @@ pub mod ble {
 
     impl Transport for BtleplugTransport {
         fn payload_limit(&self) -> usize {
-            self.payload_limit.get()
+            self.credit_flow
+                .as_ref()
+                .and_then(|flow| flow.maximum_payload)
+                .map_or(self.payload_limit.get(), |maximum| {
+                    maximum.min(self.payload_limit.get())
+                })
         }
 
         fn subscribe_notifications(
@@ -1628,7 +1763,32 @@ pub mod ble {
                     characteristic: Uuid::parse_str(FF03).unwrap(),
                     requirement,
                 }),
+                flow_control: None,
             }
+        }
+
+        #[tokio::test]
+        async fn credit_flow_separates_control_frames_and_gates_each_write() {
+            let (sender, mut receiver) = tokio::sync::mpsc::channel(8);
+            let mut flow = CreditFlowState::default();
+            sender.send(vec![0x02, 20, 0]).await.unwrap();
+            sender.send(vec![0x1a, 0x08, 0xa2]).await.unwrap();
+            sender.send(vec![0x01, 1]).await.unwrap();
+
+            receive_for_credit(&mut flow, &mut receiver).await.unwrap();
+            assert_eq!(flow.maximum_payload, Some(20));
+            assert_eq!(flow.credits, 0);
+            assert_eq!(
+                receive_flow_response(&mut flow, &mut receiver, Duration::ZERO)
+                    .await
+                    .unwrap(),
+                WaitOutcome::Response(vec![0x1a, 0x08, 0xa2])
+            );
+
+            sender.send(vec![0x01, 2]).await.unwrap();
+            receive_for_credit(&mut flow, &mut receiver).await.unwrap();
+            receive_for_credit(&mut flow, &mut receiver).await.unwrap();
+            assert_eq!(flow.credits, 0);
         }
 
         #[test]
@@ -1660,6 +1820,12 @@ pub mod ble {
             let error =
                 select_characteristics(&[write], &profile(NotificationRequirement::Required))
                     .unwrap_err();
+            assert_eq!(error.kind, TransportErrorKind::Connection);
+
+            let mut credit_profile = profile(NotificationRequirement::Optional);
+            credit_profile.flow_control = Some(BleFlowControl::PhomemoCredit);
+            let write = characteristic(FF02, CharPropFlags::WRITE_WITHOUT_RESPONSE);
+            let error = select_characteristics(&[write], &credit_profile).unwrap_err();
             assert_eq!(error.kind, TransportErrorKind::Connection);
         }
 
