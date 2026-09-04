@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+//! Versioned protobuf and validation contract for printer-agent sessions.
 #![forbid(unsafe_code)]
 
 pub mod v1 {

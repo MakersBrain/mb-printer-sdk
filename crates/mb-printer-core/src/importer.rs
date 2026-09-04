@@ -61,7 +61,6 @@ pub fn import_v3(input: &str) -> Result<Value, ImportError> {
     )
 }
 
-
 /// Legacy field descriptors carry editor-only keys such as `source` and `binding`;
 /// the canonical document keeps only the key and its label.
 fn fields(v: &Value) -> Value {
@@ -161,8 +160,10 @@ fn element(e: &Value, z: usize, d: f64, resources: &mut Vec<Value>) -> Result<Va
         x => x,
     };
     let fallback = format!("legacy-{z}");
-    let common = json!({"id":e.get("id").and_then(Value::as_str).unwrap_or(&fallback),"transform":{"x":px(e,"x",d),"y":px(e,"y",d),"width":px(e,"width",d).max(1),"height":px(e,"height",d).max(1),"rotationMillidegrees":(e.get("rotation").and_then(Value::as_f64).unwrap_or(0.0)*1000.0).round()as i64},"zOrder":e.get("zOrder").and_then(Value::as_i64).unwrap_or(z as i64),"visible":e.get("visible").and_then(Value::as_bool).unwrap_or(true),"locked":e.get("locked").and_then(Value::as_bool).unwrap_or(false)});
-    let mut o = common.as_object().unwrap().clone();
+    let Value::Object(mut o) = json!({"id":e.get("id").and_then(Value::as_str).unwrap_or(&fallback),"transform":{"x":px(e,"x",d),"y":px(e,"y",d),"width":px(e,"width",d).max(1),"height":px(e,"height",d).max(1),"rotationMillidegrees":(e.get("rotation").and_then(Value::as_f64).unwrap_or(0.0)*1000.0).round()as i64},"zOrder":e.get("zOrder").and_then(Value::as_i64).unwrap_or(z as i64),"visible":e.get("visible").and_then(Value::as_bool).unwrap_or(true),"locked":e.get("locked").and_then(Value::as_bool).unwrap_or(false)})
+    else {
+        return Err(ImportError::Element("invalid common element fields".into()));
+    };
     o.insert(
         "type".into(),
         json!(match ty {
@@ -284,7 +285,10 @@ fn add_resource(
         .map_err(|_| ImportError::Resource)?;
     let hash = format!("{:x}", Sha256::digest(&bytes));
     if let Some(existing) = resources.iter().find(|r| r["sha256"] == hash) {
-        return Ok(existing["id"].as_str().unwrap().into());
+        return existing["id"]
+            .as_str()
+            .map(str::to_owned)
+            .ok_or(ImportError::Resource);
     }
     let id = format!("res-{}", &hash[..16]);
     resources

@@ -45,6 +45,18 @@ impl RegisteredProbeRunner for Ieee1284Runner {
     }
 }
 
+#[derive(Default)]
+struct PendingRunner {
+    calls: AtomicUsize,
+}
+
+impl RegisteredProbeRunner for PendingRunner {
+    fn run(&self, _: PreparedProbeRequest, _: ProbeLimits) -> ProbeRunnerFuture<'_> {
+        self.calls.fetch_add(1, Ordering::Release);
+        Box::pin(std::future::pending())
+    }
+}
+
 fn policy() -> AgentPolicy {
     AgentPolicy {
         agent_id: "agent-1".into(),
@@ -644,4 +656,48 @@ fn unqualified_or_cancelled_registered_probe_never_reaches_hardware() {
     };
     assert_eq!(result.outcome, ResultOutcome::Cancelled as i32);
     assert_eq!(runner.calls.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn cancellation_wakes_an_agent_blocked_in_a_registered_probe() {
+    let registry = brother_read_only_registry();
+    let executor = AgentExecutor::new(policy()).unwrap();
+    executor
+        .publish(PublishedPrinter {
+            printer_id: "printer-1".into(),
+            endpoint_generation: 4,
+            endpoint: IppEndpoint::ipp("127.0.0.1", 9, "/ipp/print"),
+        })
+        .unwrap();
+    let runner = PendingRunner::default();
+    let cancellation = CancellationToken::default();
+    let cancel = cancellation.clone();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let target = probe_target("Brother");
+
+    let execution = runtime.block_on(async {
+        let execute = executor.execute_registered_probe(
+            probe_request(),
+            1_000,
+            &registry,
+            &target,
+            &runner,
+            cancellation,
+        );
+        let cancel_after_start = async {
+            while runner.calls.load(Ordering::Acquire) == 0 {
+                tokio::task::yield_now().await;
+            }
+            cancel.cancel();
+        };
+        tokio::join!(execute, cancel_after_start).0
+    });
+
+    let InitialExecution::Accepted { result, .. } = execution else {
+        panic!("qualified request is accepted before cancellation result")
+    };
+    assert_eq!(result.outcome, ResultOutcome::Cancelled as i32);
 }

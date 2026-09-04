@@ -15,6 +15,9 @@ keywords = ["thermal-printer", "async", "transport", "wasm"]
 categories = ["asynchronous", "hardware-support"]
 include = ["/src/**", "/tests/**", "/Cargo.toml", "/README.md", "/LICENSE"]
 
+[lints]
+workspace = true
+
 [dependencies]
 mb-printer-core = { path = "../mb-printer-core", version = "0.1.0" }
 thiserror.workspace = true

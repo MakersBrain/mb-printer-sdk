@@ -18,3 +18,15 @@ serde_json = "1"
 thiserror = "2"
 sha2 = "0.10"
 tracing = "0.1"
+
+[workspace.lints.rust]
+future-incompatible = "warn"
+nonstandard-style = "deny"
+unsafe-op-in-unsafe-fn = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+perf = { level = "warn", priority = -1 }
+
+[workspace.lints.rustdoc]
+broken_intra_doc_links = "deny"

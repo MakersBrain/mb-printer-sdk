@@ -265,6 +265,8 @@ pub enum ApplyChangeError {
     InvalidPlan(#[from] ChangePlanError),
     #[error("Get-Printer-Supported-Values response failed validation: {0}")]
     SupportedValues(#[from] SupportedValuesError),
+    #[error("invalid Get-Printer-Supported-Values request: {0}")]
+    SupportedValuesRequest(#[from] codec::SupportedValuesRequestError),
     #[error("invalid IPP endpoint: {0}")]
     Endpoint(#[source] IppClientError),
 }
@@ -277,6 +279,8 @@ pub enum PlanChangeError {
     Read(#[source] IppClientError),
     #[error("Get-Printer-Supported-Values response failed validation: {0}")]
     SupportedValues(#[from] SupportedValuesError),
+    #[error("invalid Get-Printer-Supported-Values request: {0}")]
+    SupportedValuesRequest(#[from] codec::SupportedValuesRequestError),
     #[error("change planning failed: {0}")]
     InvalidPlan(#[from] ChangePlanError),
 }
@@ -417,8 +421,7 @@ impl IppClient {
             .map_err(PlanChangeError::Read)?;
         let supported = if request.setting.ends_with("-supported") {
             let supported_request =
-                codec::get_printer_supported_values_request(&printer_uri, [request.setting], 2)
-                    .expect("a suffix-checked xxx-supported attribute is valid");
+                codec::get_printer_supported_values_request(&printer_uri, [request.setting], 2)?;
             let response = self
                 .inspect(endpoint, &supported_request, limits)
                 .await
@@ -461,8 +464,7 @@ impl IppClient {
                 &printer_uri,
                 [plan.setting.as_str()],
                 3,
-            )
-            .expect("a suffix-checked xxx-supported attribute is valid");
+            )?;
             let response = self
                 .inspect(endpoint, &request, limits)
                 .await

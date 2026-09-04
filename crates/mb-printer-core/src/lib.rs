@@ -1,4 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+//! Runtime-independent document, rendering, capability, discovery, and printer
+//! protocol planning primitives.
+//!
+//! This crate performs deterministic computation only: platform I/O belongs in
+//! `mb-printer-native` or a host adapter, while action execution belongs in
+//! `mb-printer-executor`.
 #![forbid(unsafe_code)]
 
 pub mod administration;

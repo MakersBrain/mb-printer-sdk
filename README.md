@@ -2,7 +2,8 @@
 # Makers' Brain printer SDK
 
 Deterministic Rust foundations for `.mb-label.json` v4 documents and thermal
-printer protocol execution. The workspace has four explicit layers:
+printer protocol execution. The workspace has six crates with one-way dependency
+flow from contracts and portable domain logic toward platform integration:
 
 - `mb-printer-core` owns printer models, BLE profiles, rendering, and protocol plans.
 - `mb-printer-executor` owns the runtime-independent asynchronous transport
@@ -11,6 +12,15 @@ printer protocol execution. The workspace has four explicit layers:
   transports plus an optional native-only blocking facade.
 - `mb-printer-wasm` bridges JavaScript transports into that same Rust executor;
   its TypeScript adapters contain browser I/O only.
+- `mb-printer-agent-proto` owns the versioned protobuf contract and its
+  fail-closed request validation.
+- `mb-printer-agent` is the native policy boundary that resolves published
+  printers and delegates authorized operations to native transports.
+
+`mb-printer-core` has no dependency on an async runtime or platform transport.
+Both native and WebAssembly adapters depend on the shared executor; the executor
+depends only on portable core plans. The agent depends on the protocol contract,
+core policy types, and native integration layer.
 
 Async execution is canonical. Applications own the Tokio runtime and call
 `mb_printer_executor::execute(&plan, &mut transport).await`; the SDK never
