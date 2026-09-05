@@ -87,6 +87,26 @@ fn transform(f: &str, v: &str, context: &Context<'_>) -> Result<String, Template
             }
             out
         }
+        _ if f.starts_with("decimals:") => {
+            // Up to N decimals: rounds like number:N, then drops trailing zeros and a bare point,
+            // so 30.0 prints as 30 while 4.5 keeps its half.
+            let decimals = f[9..]
+                .parse::<u8>()
+                .map_err(|_| TemplateError::Value(f.into()))?
+                .min(9) as usize;
+            let mut out = format_decimal(v, decimals)?;
+            if out.contains('.') {
+                let trimmed = out.trim_end_matches('0').trim_end_matches('.');
+                out = trimmed.to_string();
+            }
+            if out == "-0" {
+                out = "0".into();
+            }
+            if context.locale.starts_with("fr") {
+                out = out.replace('.', ",")
+            }
+            out
+        }
         _ if f.starts_with("if-empty:") => {
             let p: Vec<_> = f[9..].splitn(2, ':').collect();
             if p.len() != 2 {
