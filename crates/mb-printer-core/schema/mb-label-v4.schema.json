@@ -31,7 +31,7 @@
     "ellipse":{"type":"object","allOf":[{"$ref":"#/$defs/common"},{"type":"object","required":["type","strokeWidth"],"properties":{"type":{"const":"ellipse"},"strokeWidth":{"type":"integer","minimum":1},"fill":{"type":"boolean"}}}],"unevaluatedProperties":false},
     "triangle":{"type":"object","allOf":[{"$ref":"#/$defs/common"},{"type":"object","required":["type","strokeWidth"],"properties":{"type":{"const":"triangle"},"strokeWidth":{"type":"integer","minimum":1},"fill":{"type":"boolean"}}}],"unevaluatedProperties":false},
     "barcode":{"type":"object","allOf":[{"$ref":"#/$defs/common"},{"type":"object","required":["type","data","symbology"],"properties":{"type":{"const":"barcode"},"data":{"type":"string"},"symbology":{"enum":["code128","ean13","upc-a","code39"]},"humanReadable":{"type":"boolean"}}}],"unevaluatedProperties":false},
-    "qr":{"type":"object","allOf":[{"$ref":"#/$defs/common"},{"type":"object","required":["type","data","errorCorrection"],"properties":{"type":{"const":"qr-code"},"data":{"type":"string"},"errorCorrection":{"enum":["L","M","Q","H"]}}}],"unevaluatedProperties":false},
+    "qr":{"type":"object","allOf":[{"$ref":"#/$defs/common"},{"type":"object","required":["type","data","errorCorrection"],"properties":{"type":{"const":"qr-code"},"data":{"type":"string"},"errorCorrection":{"enum":["L","M","Q","H"]},"quietZone":{"type":"integer","minimum":0,"maximum":16}}}],"unevaluatedProperties":false},
     "group":{"type":"object","allOf":[{"$ref":"#/$defs/common"},{"type":"object","required":["type","children"],"properties":{"type":{"const":"group"},"children":{"type":"array","items":{"type":"string","minLength":1},"uniqueItems":true}}}],"unevaluatedProperties":false}
   }
 }

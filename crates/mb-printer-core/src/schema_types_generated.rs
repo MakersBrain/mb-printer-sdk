@@ -384,6 +384,8 @@ pub enum SchemaElementDto {
         id: String,
         #[serde(rename = "locked", default, skip_serializing_if = "Option::is_none")]
         locked: Option<bool>,
+        #[serde(rename = "quietZone", default, skip_serializing_if = "Option::is_none")]
+        quiet_zone: Option<i64>,
         #[serde(rename = "transform")]
         transform: TransformDto,
         #[serde(rename = "visible", default, skip_serializing_if = "Option::is_none")]

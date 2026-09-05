@@ -843,8 +843,9 @@ fn draw_at(
         Element::QrCode {
             data,
             error_correction,
+            quiet_zone,
             ..
-        } => qr(c, x, y, w, h, data, *error_correction)?,
+        } => qr(c, x, y, w, h, data, *error_correction, *quiet_zone)?,
         Element::Image { resource, crop, .. } => {
             let item = doc
                 .resources
@@ -1526,6 +1527,7 @@ fn qr(
     h: i32,
     data: &str,
     level: crate::document::QrCorrection,
+    quiet_zone: u8,
 ) -> Result<(), RenderError> {
     let ec = match level {
         crate::document::QrCorrection::L => EcLevel::L,
@@ -1536,9 +1538,11 @@ fn qr(
     let q =
         QrCode::with_error_correction_level(data.as_bytes(), ec).map_err(|_| RenderError::Qr)?;
     let n = q.width() as i32;
-    let scale = (w.min(h) / (n + 8)).max(1);
-    let ox = x + (w - (n + 8) * scale) / 2 + 4 * scale;
-    let oy = y + (h - (n + 8) * scale) / 2 + 4 * scale;
+    let margin = i32::from(quiet_zone.min(16));
+    let total = n + 2 * margin;
+    let scale = (w.min(h) / total).max(1);
+    let ox = x + (w - total * scale) / 2 + margin * scale;
+    let oy = y + (h - total * scale) / 2 + margin * scale;
     for yy in 0..n {
         for xx in 0..n {
             if q[(xx as usize, yy as usize)] == qrcode::Color::Dark {

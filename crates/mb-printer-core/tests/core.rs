@@ -321,3 +321,37 @@ fn protocol_rejects_copy_action_and_owned_byte_limits_before_expansion() {
         Err(protocol::PlanError::Limit("owned bytes"))
     );
 }
+#[test]
+fn qr_quiet_zone_is_configurable_and_defaults_to_four_modules() {
+    fn dark_bounds(quiet_zone: Option<u8>) -> (u32, u32, u32, u32) {
+        let zone = quiet_zone.map_or(String::new(), |z| format!(r#","quietZone":{z}"#));
+        let json = format!(
+            r#"{{"version":4,"name":"qr","media":{{"width":20000,"height":20000,"unit":"micrometre","dpi":254,"orientation":"portrait","printableBounds":{{"x":0,"y":0,"width":20000,"height":20000}},"shape":"rectangle"}},"coordinateSystem":{{"unit":"micrometre","origin":"top-left","rounding":"half-away-from-zero"}},"elements":[{{"type":"qr-code","id":"q","transform":{{"x":0,"y":0,"width":20000,"height":20000}},"zOrder":0,"data":"MB","errorCorrection":"L"{zone}}}]}}"#
+        );
+        let document = Document::from_json(&json).unwrap();
+        document.validate().unwrap();
+        let raster = mb_printer_core::render::render(&document, Default::default()).unwrap();
+        let (mut left, mut top, mut right, mut bottom) = (u32::MAX, u32::MAX, 0, 0);
+        for y in 0..raster.height {
+            for x in 0..raster.width {
+                if raster.pixels[(y * raster.width + x) as usize] == 1 {
+                    left = left.min(x);
+                    top = top.min(y);
+                    right = right.max(x);
+                    bottom = bottom.max(y);
+                }
+            }
+        }
+        (left, top, right, bottom)
+    }
+    let default = dark_bounds(None);
+    let four = dark_bounds(Some(4));
+    let zero = dark_bounds(Some(0));
+    assert_eq!(default, four, "an absent quiet zone means four modules");
+    // Without a quiet zone the symbol grows to the box; with one it sits inside a margin.
+    assert!(zero.0 < four.0 && zero.1 < four.1 && zero.2 > four.2 && zero.3 > four.3);
+    assert!(
+        zero.0 <= 10,
+        "no quiet zone leaves at most the centring remainder"
+    );
+}

@@ -114,6 +114,7 @@
         "groupId",
         "id",
         "locked",
+        "quietZone",
         "transform",
         "type",
         "visible",
