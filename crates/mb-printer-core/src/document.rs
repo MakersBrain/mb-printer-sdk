@@ -107,6 +107,10 @@ pub struct Constraints {
     pub zone: Option<String>,
 }
 
+fn default_quiet_zone() -> u8 {
+    4
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(
     tag = "type",
@@ -177,6 +181,9 @@ pub enum Element {
         common: Common,
         data: String,
         error_correction: QrCorrection,
+        /// Blank modules around the symbol. The standard asks for 4; scanners struggle below 2.
+        #[serde(default = "default_quiet_zone")]
+        quiet_zone: u8,
     },
     Group {
         #[serde(flatten)]
