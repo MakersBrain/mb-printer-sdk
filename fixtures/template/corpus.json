@@ -1,13 +1,128 @@
 {
   "_license": "SPDX-License-Identifier: AGPL-3.0-or-later",
   "cases": [
-    {"name":"pipeline","template":"{{name|trim|upper}}","fields":{"name":" mb "},"locale":"en","date":"1970-01-01","output":"MB"},
-    {"name":"decimal-half-away","template":"{{amount|number:2}}","fields":{"amount":"2.675"},"locale":"en","date":"1970-01-01","output":"2.68"},
-    {"name":"negative-decimal","template":"{{amount|number:2}}","fields":{"amount":"-2.675"},"locale":"fr-FR","date":"1970-01-01","output":"-2,68"},
-    {"name":"missing-default","template":"{{missing|default:unknown}}","fields":{},"locale":"en","date":"1970-01-01","output":"unknown"},
-    {"name":"conditional","template":"{{state|if-eq:ok:YES:NO}}/{{empty|if-empty:N:E}}","fields":{"state":"ok","empty":""},"locale":"en","date":"1970-01-01","output":"YES/N"},
-    {"name":"injected-date","template":"{{@date|date:%d/%m/%Y}}","fields":{},"locale":"fr-FR","date":"2024-02-29","output":"29/02/2024"},
-    {"name":"bare-missing-is-error","template":"{{missing}}","fields":{},"locale":"en","date":"1970-01-01","error":"unknown field: missing"},
-    {"name":"invalid-date-is-error","template":"{{@date|date:%Y}}","fields":{},"locale":"en","date":"2023-02-29","error":"invalid numeric/date value: 2023-02-29"}
+    {
+      "name": "pipeline",
+      "template": "{{name|trim|upper}}",
+      "fields": {
+        "name": " mb "
+      },
+      "locale": "en",
+      "date": "1970-01-01",
+      "output": "MB"
+    },
+    {
+      "name": "decimal-half-away",
+      "template": "{{amount|number:2}}",
+      "fields": {
+        "amount": "2.675"
+      },
+      "locale": "en",
+      "date": "1970-01-01",
+      "output": "2.68"
+    },
+    {
+      "name": "negative-decimal",
+      "template": "{{amount|number:2}}",
+      "fields": {
+        "amount": "-2.675"
+      },
+      "locale": "fr-FR",
+      "date": "1970-01-01",
+      "output": "-2,68"
+    },
+    {
+      "name": "missing-default",
+      "template": "{{missing|default:unknown}}",
+      "fields": {},
+      "locale": "en",
+      "date": "1970-01-01",
+      "output": "unknown"
+    },
+    {
+      "name": "conditional",
+      "template": "{{state|if-eq:ok:YES:NO}}/{{empty|if-empty:N:E}}",
+      "fields": {
+        "state": "ok",
+        "empty": ""
+      },
+      "locale": "en",
+      "date": "1970-01-01",
+      "output": "YES/N"
+    },
+    {
+      "name": "injected-date",
+      "template": "{{@date|date:%d/%m/%Y}}",
+      "fields": {},
+      "locale": "fr-FR",
+      "date": "2024-02-29",
+      "output": "29/02/2024"
+    },
+    {
+      "name": "bare-missing-is-error",
+      "template": "{{missing}}",
+      "fields": {},
+      "locale": "en",
+      "date": "1970-01-01",
+      "error": "unknown field: missing"
+    },
+    {
+      "name": "invalid-date-is-error",
+      "template": "{{@date|date:%Y}}",
+      "fields": {},
+      "locale": "en",
+      "date": "2023-02-29",
+      "error": "invalid numeric/date value: 2023-02-29"
+    },
+    {
+      "name": "decimals-trims-zero-fraction",
+      "template": "{{amount|decimals:2}}",
+      "fields": {
+        "amount": "30.0"
+      },
+      "locale": "en",
+      "date": "1970-01-01",
+      "output": "30"
+    },
+    {
+      "name": "decimals-keeps-needed-digits",
+      "template": "{{amount|decimals:2}}",
+      "fields": {
+        "amount": "4.5"
+      },
+      "locale": "en",
+      "date": "1970-01-01",
+      "output": "4.5"
+    },
+    {
+      "name": "decimals-rounds-and-localises",
+      "template": "{{amount|decimals:2}}",
+      "fields": {
+        "amount": "2.675"
+      },
+      "locale": "fr-FR",
+      "date": "1970-01-01",
+      "output": "2,68"
+    },
+    {
+      "name": "decimals-drops-trailing-zero",
+      "template": "{{amount|decimals:2}}",
+      "fields": {
+        "amount": "4.50"
+      },
+      "locale": "en",
+      "date": "1970-01-01",
+      "output": "4.5"
+    },
+    {
+      "name": "decimals-invalid-count",
+      "template": "{{amount|decimals:x}}",
+      "fields": {
+        "amount": "1"
+      },
+      "locale": "en",
+      "date": "1970-01-01",
+      "error": "invalid numeric/date value: decimals:x"
+    }
   ]
 }
